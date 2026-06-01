@@ -14,13 +14,14 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QDateEdit, QMessageBox, QFrame,
-    QSizePolicy, QProgressBar, QCheckBox, QGraphicsDropShadowEffect,
+    QSizePolicy, QProgressBar, QGraphicsDropShadowEffect,
+    QAbstractButton,
 )
 from PyQt6.QtCore import (
     Qt, QDate, QThread, pyqtSignal, QSettings, QSize,
     QVariantAnimation, QEasingCurve,
 )
-from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QColor, QPainter
+from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QColor, QPainter, QMouseEvent
 
 from openpyxl import load_workbook
 from build_excel import run_comparison, build_report, fix_xlsx
@@ -49,26 +50,28 @@ def _shadow(blur=20, y=5, alpha=30):
 
 # ── Animated iOS-style toggle ─────────────────────────────────────────────────
 
-class ToggleSwitch(QCheckBox):
-    """Smooth animated toggle switch."""
+class ToggleSwitch(QAbstractButton):
+    """Smooth animated toggle — uses QAbstractButton for reliable click handling."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setCheckable(True)
         self.setFixedSize(46, 26)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._pos = 3.0
         self._anim = QVariantAnimation(self)
         self._anim.setDuration(150)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._anim.valueChanged.connect(self._update)
-        self.stateChanged.connect(self._kick)
+        self.toggled.connect(self._kick)
 
     def _update(self, v):
         self._pos = float(v)
         self.update()
 
-    def _kick(self, state):
+    def _kick(self, checked: bool):
         self._anim.setStartValue(float(self._pos))
-        self._anim.setEndValue(22.0 if state else 3.0)
+        self._anim.setEndValue(22.0 if checked else 3.0)
         self._anim.start()
 
     def paintEvent(self, event):
@@ -273,7 +276,7 @@ class DateRangeCard(QFrame):
         hint_lbl.setStyleSheet(f'color: {MUTED}; font-size: 11px; background: transparent;')
 
         self.toggle = ToggleSwitch()
-        self.toggle.stateChanged.connect(self._on_toggle)
+        self.toggle.toggled.connect(self._on_toggle)
 
         header.addWidget(icon_lbl)
         header.addWidget(text_lbl)
@@ -332,8 +335,8 @@ class DateRangeCard(QFrame):
         self._pickers.setVisible(False)
         root.addWidget(self._pickers)
 
-    def _on_toggle(self, state):
-        self._pickers.setVisible(bool(state))
+    def _on_toggle(self, checked: bool):
+        self._pickers.setVisible(checked)
 
     def is_active(self):
         return self.toggle.isChecked()
