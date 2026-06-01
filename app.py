@@ -600,7 +600,7 @@ class ResultsCard(QFrame):
 # ── Worker ────────────────────────────────────────────────────────────────────
 
 class Worker(QThread):
-    finished = pyqtSignal(str, int, int)
+    finished = pyqtSignal(str, int, int, str)   # tmp_path, math, eng, drange
     error    = pyqtSignal(str)
     status   = pyqtSignal(str)
     progress = pyqtSignal(int)
@@ -646,7 +646,7 @@ class Worker(QThread):
             math_count = len([d for d in diffs if d['subject'] == 'מתמטיקה'])
             eng_count  = len([d for d in diffs if d['subject'] == 'אנגלית'])
             self.progress.emit(100)
-            self.finished.emit(self.output, math_count, eng_count)
+            self.finished.emit(self.output, math_count, eng_count, drange)
 
         except Exception as exc:
             import traceback
@@ -787,13 +787,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, 'חסר קובץ', 'יש לבחור קובץ "ייצוא שיטס".')
             return
 
-        from PyQt6.QtWidgets import QFileDialog
-        default = os.path.join(os.path.expanduser('~'), 'Downloads', 'דוח_פערים.xlsx')
-        output, _ = QFileDialog.getSaveFileName(self, 'שמור דוח', default, 'Excel (*.xlsx)')
-        if not output:
-            return
-        if not output.endswith('.xlsx'):
-            output += '.xlsx'
+        # Build to a temp file first — we learn the date range only after processing
+        tmp_output = os.path.join(tempfile.mkdtemp(), 'report.xlsx')
 
         self.results_card.hide_results()
         self.build_btn.setEnabled(False)
@@ -807,7 +802,7 @@ class MainWindow(QMainWindow):
             self.date_card.is_active(),
             date_start=self.date_card.get_start(),
             date_end=self.date_card.get_end(),
-            output=output,
+            output=tmp_output,
         )
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_error)
@@ -815,11 +810,36 @@ class MainWindow(QMainWindow):
         self._worker.progress.connect(self.progress_bar.setValue)
         self._worker.start()
 
-    def _on_done(self, path: str, math_count: int, eng_count: int):
+    @staticmethod
+    def _smart_filename(drange: str) -> str:
+        """'01.05.2026 — 31.05.2026'  →  'דוח_פערים_01.05-31.05.xlsx'"""
+        parts = [p.strip() for p in drange.split('—')]
+        if len(parts) == 2:
+            d1 = '.'.join(parts[0].split('.')[:2])   # "01.05"
+            d2 = '.'.join(parts[1].split('.')[:2])   # "31.05"
+            return f'דוח_פערים_{d1}-{d2}.xlsx'
+        return 'דוח_פערים.xlsx'
+
+    def _on_done(self, tmp_path: str, math_count: int, eng_count: int, drange: str):
         self.build_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status_lbl.setText('')
-        self.results_card.show_results(path, math_count, eng_count)
+
+        # Ask where to save, with smart filename derived from the actual date range
+        from PyQt6.QtWidgets import QFileDialog
+        import shutil
+        filename = self._smart_filename(drange)
+        default  = os.path.join(os.path.expanduser('~'), 'Downloads', filename)
+        output, _ = QFileDialog.getSaveFileName(self, 'שמור דוח', default, 'Excel (*.xlsx)')
+        if not output:
+            try: os.remove(tmp_path)
+            except OSError: pass
+            return
+        if not output.endswith('.xlsx'):
+            output += '.xlsx'
+
+        shutil.move(tmp_path, output)
+        self.results_card.show_results(output, math_count, eng_count)
         self._mac_notify(math_count + eng_count)
 
     def _on_error(self, msg: str):
