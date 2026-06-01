@@ -6,10 +6,11 @@ build/
 dist/
 *.spec
 
-# local virtualenvs
+# virtualenvs
 venv/
 .venv/
 env/
+.env/
 
 # temp files
 *.tmp

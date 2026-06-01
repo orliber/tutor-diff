@@ -4,9 +4,19 @@
 set -euo pipefail
 
 APP_NAME="דוח פערים מתרגלים"
+VENV_DIR=".venv"
+
+# Create/reuse virtualenv
+if [ ! -d "$VENV_DIR" ]; then
+    echo "→ Creating virtualenv…"
+    python3 -m venv "$VENV_DIR"
+fi
+
+source "$VENV_DIR/bin/activate"
 
 echo "→ Installing dependencies…"
-pip install -r requirements.txt pyinstaller --quiet
+pip install --quiet --upgrade pip
+pip install --quiet -r requirements.txt pyinstaller
 
 echo "→ Building .app bundle…"
 pyinstaller \
