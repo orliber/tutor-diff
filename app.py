@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import (
     Qt, QDate, QThread, pyqtSignal, QSettings, QSize,
     QVariantAnimation, QEasingCurve, QLocale, QTimer, QPoint,
+    QEvent, QRect,
 )
 from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QColor, QPainter
 
@@ -53,8 +54,39 @@ class StyledCalendar(QCalendarWidget):
         self.setLocale(QLocale(QLocale.Language.Hebrew, QLocale.Country.Israel))
         self.setMinimumWidth(290)
         self.setMinimumHeight(270)
+        self._hovered:    QDate | None = None
+        self._cell_rects: dict        = {}
         self._apply_style()
         QTimer.singleShot(0, self._style_nav_buttons)
+        QTimer.singleShot(0, self._setup_hover)
+
+    def _setup_hover(self):
+        from PyQt6.QtWidgets import QAbstractItemView
+        view = self.findChild(QAbstractItemView)
+        if view:
+            view.setMouseTracking(True)
+            view.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtWidgets import QAbstractItemView
+        if isinstance(obj, QAbstractItemView):
+            t = event.type()
+            if t == QEvent.Type.MouseMove:
+                new_h = self._date_at(event.pos())
+                if new_h != self._hovered:
+                    self._hovered = new_h
+                    self.updateCells()
+            elif t == QEvent.Type.Leave:
+                if self._hovered is not None:
+                    self._hovered = None
+                    self.updateCells()
+        return super().eventFilter(obj, event)
+
+    def _date_at(self, pos) -> 'QDate | None':
+        for date, rect in self._cell_rects.items():
+            if rect.contains(pos):
+                return date
+        return None
 
     def _apply_style(self):
         self.setStyleSheet(f"""
@@ -116,6 +148,13 @@ class StyledCalendar(QCalendarWidget):
     def paintCell(self, painter, rect, date):
         if not date.isValid():
             return
+
+        # Store rect for hover hit-testing
+        self._cell_rects[date] = QRect(
+            int(rect.x()), int(rect.y()),
+            int(rect.width()), int(rect.height())
+        )
+
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
@@ -123,10 +162,11 @@ class StyledCalendar(QCalendarWidget):
         today    = QDate.currentDate()
         selected = self.selectedDate()
         other_mo = date.month() != self.monthShown()
+        hovered  = date == self._hovered and not other_mo
 
         d = min(rect.width(), rect.height()) - 8
-        x = rect.center().x() - d // 2
-        y = rect.center().y() - d // 2
+        x = rect.center().x() - d / 2
+        y = rect.center().y() - d / 2
 
         if date == selected:
             painter.setBrush(QColor(ACCENT))
@@ -138,6 +178,11 @@ class StyledCalendar(QCalendarWidget):
             painter.drawEllipse(x, y, d, d)
             painter.setPen(QColor(ACCENT))
             f = QFont(); f.setPointSize(12); f.setBold(True)
+        elif hovered:
+            painter.setBrush(QColor('#e8edf2'))
+            painter.drawEllipse(x, y, d, d)
+            painter.setPen(QColor(TEXT))
+            f = QFont(); f.setPointSize(12)
         else:
             color = '#b8c8d8' if other_mo else ('#64748b' if date.dayOfWeek() == 7 else TEXT)
             painter.setPen(QColor(color))
@@ -613,7 +658,7 @@ class Worker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('דוח פערים מתרגלים')
+        self.setWindowTitle('מתכנן הפערים')
         self.setMinimumWidth(660)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._settings = QSettings('TutorDiff', 'TutorDiff')
@@ -642,7 +687,7 @@ class MainWindow(QMainWindow):
         h_lay.setContentsMargins(24, 18, 24, 18)
         h_lay.setSpacing(4)
 
-        title = QLabel('דוח פערים מתרגלים')
+        title = QLabel('מתכנן הפערים')
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         ft = QFont(); ft.setPointSize(22); ft.setBold(True)
         title.setFont(ft)
@@ -743,7 +788,7 @@ class MainWindow(QMainWindow):
             return
 
         from PyQt6.QtWidgets import QFileDialog
-        default = os.path.join(os.path.expanduser('~'), 'Desktop', 'דוח_פערים.xlsx')
+        default = os.path.join(os.path.expanduser('~'), 'Downloads', 'דוח_פערים.xlsx')
         output, _ = QFileDialog.getSaveFileName(self, 'שמור דוח', default, 'Excel (*.xlsx)')
         if not output:
             return
@@ -788,7 +833,7 @@ class MainWindow(QMainWindow):
             subprocess.run([
                 'osascript', '-e',
                 f'display notification "נמצאו {total} פערים — הדוח מוכן" '
-                f'with title "דוח פערים מתרגלים" sound name "Glass"'
+                f'with title "מתכנן הפערים" sound name "Glass"'
             ], check=False)
         except Exception:
             pass
