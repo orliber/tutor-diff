@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+build/
+dist/
+*.spec
+
+# local virtualenvs
+venv/
+.venv/
+env/
+
+# temp files
+*.tmp
+/tmp/
+
+# Excel files (potentially sensitive — don't commit input/output data)
+*.xlsx
+*.xls
