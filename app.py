@@ -6,6 +6,7 @@ PyQt6 wrapper around build_excel.py.
 
 import sys
 import os
+import re
 import tempfile
 import subprocess
 from datetime import datetime
@@ -628,6 +629,37 @@ class Worker(QThread):
             wb1 = load_workbook(d_fixed)
             wb2 = load_workbook(y_fixed)
 
+            # ── בדיקות מבנה בסיסיות ────────────────────────────────────
+            ws1 = wb1.active
+            if ws1 is None or ws1.max_row < 3:
+                self.error.emit('קובץ "דרוש תיקון" נראה ריק.\nוודא שבחרת את הקובץ הנכון.')
+                return
+
+            has_dates = any(
+                ws1.cell(1, c).value and
+                re.search(r'\d{1,2}[./]\d{1,2}', str(ws1.cell(1, c).value))
+                for c in range(1, min(ws1.max_column + 1, 30))
+            )
+            if not has_dates:
+                self.error.emit(
+                    'קובץ "דרוש תיקון" לא נראה כתוכנית שיעורים.\n'
+                    'שורה 1 צריכה להכיל תאריכים (למשל 01.05.2026).'
+                )
+                return
+
+            has_yom = any(
+                'יום' in str(wb2[sn].cell(1, c).value or '')
+                for sn in wb2.sheetnames
+                for c in range(1, min(wb2[sn].max_column + 1, 60))
+            )
+            if not has_yom:
+                self.error.emit(
+                    'קובץ "ייצוא שיטס" לא נראה כייצוא תקין.\n'
+                    'שורה 1 צריכה להכיל "יום ראשון", "יום שני" וכו\'.'
+                )
+                return
+            # ────────────────────────────────────────────────────────────
+
             self.status.emit('משווה…');         self.progress.emit(50)
             diffs, tfm, drange = run_comparison(wb1, wb2)
 
@@ -637,7 +669,14 @@ class Worker(QThread):
                           f"{self.date_end.strftime('%d.%m.%Y')}")
 
             if not diffs:
-                self.error.emit('לא נמצאו פערים בטווח התאריכים שנבחר.')
+                if self.use_filter:
+                    self.error.emit(
+                        f'לא נמצאו פערים בין '
+                        f'{self.date_start.strftime("%d.%m.%Y")} ל-{self.date_end.strftime("%d.%m.%Y")}.\n'
+                        'נסה להרחיב את טווח התאריכים או לבטל את הסינון.'
+                    )
+                else:
+                    self.error.emit('לא נמצאו פערים — הקבצים נראים תואמים לחלוטין.')
                 return
 
             self.status.emit('בונה דוח…');     self.progress.emit(80)
@@ -650,7 +689,7 @@ class Worker(QThread):
 
         except Exception as exc:
             import traceback
-            self.error.emit(f'שגיאה:\n{exc}\n\n{traceback.format_exc()}')
+            self.error.emit(f'שגיאה בעיבוד הקבצים:\n{exc}\n\n{traceback.format_exc()}')
 
 
 # ── Main window ───────────────────────────────────────────────────────────────
@@ -780,12 +819,34 @@ class MainWindow(QMainWindow):
     # ── run ───────────────────────────────────────────────────────────────────
 
     def _run(self):
-        if not self.darush_zone.file_path:
+        darush = self.darush_zone.file_path
+        yitzua = self.yitzua_zone.file_path
+
+        if not darush:
             QMessageBox.warning(self, 'חסר קובץ', 'יש לבחור קובץ "דרוש תיקון".')
             return
-        if not self.yitzua_zone.file_path:
+        if not yitzua:
             QMessageBox.warning(self, 'חסר קובץ', 'יש לבחור קובץ "ייצוא שיטס".')
             return
+        if not os.path.exists(darush):
+            QMessageBox.warning(self, 'קובץ לא נמצא',
+                f'הקובץ "דרוש תיקון" לא נמצא בנתיב:\n{darush}')
+            self.darush_zone._clear()
+            return
+        if not os.path.exists(yitzua):
+            QMessageBox.warning(self, 'קובץ לא נמצא',
+                f'הקובץ "ייצוא שיטס" לא נמצא בנתיב:\n{yitzua}')
+            self.yitzua_zone._clear()
+            return
+        if os.path.abspath(darush) == os.path.abspath(yitzua):
+            QMessageBox.warning(self, 'קבצים זהים',
+                'שני הקבצים הם אותו קובץ.\nיש לבחור שני קבצים שונים.')
+            return
+        if self.date_card.is_active():
+            if self.date_card.get_start() > self.date_card.get_end():
+                QMessageBox.warning(self, 'טווח תאריכים שגוי',
+                    'תאריך ההתחלה חייב להיות לפני תאריך הסיום.')
+                return
 
         # Build to a temp file first — we learn the date range only after processing
         tmp_output = os.path.join(tempfile.mkdtemp(), 'report.xlsx')
