@@ -2,9 +2,6 @@
 """
 Tutor Diff — Desktop GUI
 PyQt6 wrapper around build_excel.py.
-
-The GUI only calls run_comparison() and build_report() from build_excel.py —
-all skill logic lives there and can be updated independently.
 """
 
 import sys
@@ -17,61 +14,137 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QDateEdit, QMessageBox, QFrame,
-    QSizePolicy, QCheckBox, QGroupBox, QProgressBar,
+    QSizePolicy, QProgressBar, QCheckBox, QGraphicsDropShadowEffect,
 )
-from PyQt6.QtCore import Qt, QDate, QThread, pyqtSignal, QSettings
-from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent
+from PyQt6.QtCore import (
+    Qt, QDate, QThread, pyqtSignal, QSettings, QSize,
+    QVariantAnimation, QEasingCurve,
+)
+from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QColor, QPainter
 
 from openpyxl import load_workbook
 from build_excel import run_comparison, build_report, fix_xlsx
 
+# ── Palette ───────────────────────────────────────────────────────────────────
+BG        = '#eef2f7'
+CARD      = '#ffffff'
+PRIMARY   = '#1e3a5f'
+PRIMARY_H = '#2d5a8e'
+ACCENT    = '#3b82f6'
+SUCCESS   = '#059669'
+SUCCESS_H = '#047857'
+MUTED     = '#64748b'
+BORDER    = '#dde3ea'
+TEXT      = '#1e293b'
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Drop zone widget
-# ─────────────────────────────────────────────────────────────────────────────
+
+def _shadow(blur=20, y=5, alpha=30):
+    e = QGraphicsDropShadowEffect()
+    e.setBlurRadius(blur)
+    e.setXOffset(0)
+    e.setYOffset(y)
+    e.setColor(QColor(0, 0, 0, alpha))
+    return e
+
+
+# ── Animated iOS-style toggle ─────────────────────────────────────────────────
+
+class ToggleSwitch(QCheckBox):
+    """Smooth animated toggle switch."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(46, 26)
+        self._pos = 3.0
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(150)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._update)
+        self.stateChanged.connect(self._kick)
+
+    def _update(self, v):
+        self._pos = float(v)
+        self.update()
+
+    def _kick(self, state):
+        self._anim.setStartValue(float(self._pos))
+        self._anim.setEndValue(22.0 if state else 3.0)
+        self._anim.start()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(ACCENT if self.isChecked() else '#c8d5e0'))
+        p.drawRoundedRect(0, 0, 46, 26, 13, 13)
+        p.setBrush(QColor('#ffffff'))
+        p.drawEllipse(int(self._pos), 3, 20, 20)
+        p.end()
+
+    def sizeHint(self):
+        return QSize(46, 26)
+
+
+# ── Base card ─────────────────────────────────────────────────────────────────
+
+class Card(QFrame):
+    def __init__(self, parent=None, radius=14):
+        super().__init__(parent)
+        self._radius = radius
+        self.setStyleSheet(f"""
+            Card {{
+                background: {CARD};
+                border-radius: {radius}px;
+                border: 1px solid {BORDER};
+            }}
+        """)
+        self.setGraphicsEffect(_shadow())
+
+
+# ── Drop zone ─────────────────────────────────────────────────────────────────
 
 class DropZone(QFrame):
     file_changed = pyqtSignal(str)
-    cleared = pyqtSignal()
+    cleared      = pyqtSignal()
 
     def __init__(self, title: str, subtitle: str, parent=None):
         super().__init__(parent)
         self.file_path: str | None = None
         self.setAcceptDrops(True)
-        self.setMinimumHeight(165)
+        self.setMinimumHeight(172)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setGraphicsEffect(_shadow())
         self._build(title, subtitle)
-        self._style(False)
+        self._apply_style('empty')
 
     def _build(self, title, subtitle):
         lay = QVBoxLayout(self)
         lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.setSpacing(5)
-        lay.setContentsMargins(14, 14, 14, 14)
+        lay.setContentsMargins(16, 16, 16, 14)
 
         self._icon = QLabel('📂')
         self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._icon.setFont(QFont('', 30))
+        self._icon.setFont(QFont('', 32))
 
         self._title = QLabel(title)
         self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        f = QFont()
-        f.setBold(True)
-        f.setPointSize(13)
+        f = QFont(); f.setBold(True); f.setPointSize(14)
         self._title.setFont(f)
+        self._title.setStyleSheet(f'color: {TEXT}; background: transparent;')
 
         self._sub = QLabel(subtitle)
         self._sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._sub.setStyleSheet('color: #888; font-size: 11px;')
+        self._sub.setStyleSheet(f'color: {MUTED}; font-size: 11px; background: transparent;')
 
         self._file = QLabel('')
         self._file.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._file.setStyleSheet('color: #2a7ae2; font-size: 11px; font-weight: bold;')
+        self._file.setStyleSheet(f'color: {ACCENT}; font-size: 11px; font-weight: bold; background: transparent;')
         self._file.setWordWrap(True)
 
         self._meta = QLabel('')
         self._meta.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._meta.setStyleSheet('color: #aaa; font-size: 10px;')
+        self._meta.setStyleSheet('color: #9aa5b1; font-size: 10px; background: transparent;')
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
@@ -79,23 +152,23 @@ class DropZone(QFrame):
 
         self._choose_btn = QPushButton('בחר קובץ')
         self._choose_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._choose_btn.setStyleSheet("""
-            QPushButton {
-                background: #f0f4f8; border: 1px solid #ccd;
-                border-radius: 5px; padding: 4px 14px; font-size: 12px;
-            }
-            QPushButton:hover { background: #e0e8f0; }
+        self._choose_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #f1f5f9; border: 1px solid {BORDER};
+                border-radius: 6px; padding: 5px 16px; font-size: 12px; color: {TEXT};
+            }}
+            QPushButton:hover {{ background: #e2e8f0; }}
         """)
         self._choose_btn.clicked.connect(self._choose)
 
         self._clear_btn = QPushButton('✕')
         self._clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._clear_btn.setFixedSize(26, 26)
+        self._clear_btn.setFixedSize(28, 28)
         self._clear_btn.setToolTip('נקה קובץ')
         self._clear_btn.setStyleSheet("""
             QPushButton {
                 background: #fee2e2; border: 1px solid #fca5a5;
-                border-radius: 5px; font-size: 11px; color: #dc2626;
+                border-radius: 6px; font-size: 11px; color: #dc2626;
             }
             QPushButton:hover { background: #fca5a5; }
         """)
@@ -110,25 +183,14 @@ class DropZone(QFrame):
             lay.addWidget(w)
         lay.addLayout(btn_row)
 
-    def _style(self, has_file: bool):
-        if has_file:
-            self.setStyleSheet("""
-                DropZone {
-                    border: 2px solid #2a7ae2;
-                    border-radius: 12px;
-                    background: #f0f7ff;
-                }
-            """)
-            self._icon.setText('✅')
-        else:
-            self.setStyleSheet("""
-                DropZone {
-                    border: 2px dashed #c0c8d4;
-                    border-radius: 12px;
-                    background: #f8fafc;
-                }
-            """)
-            self._icon.setText('📂')
+    def _apply_style(self, state: str):
+        styles = {
+            'empty':  f'background:{CARD}; border:2px dashed #c0cdd9; border-radius:14px;',
+            'filled': f'background:#f0f7ff; border:2px solid {ACCENT}; border-radius:14px;',
+            'hover':  f'background:#dbeafe; border:2px dashed {ACCENT}; border-radius:14px;',
+        }
+        self.setStyleSheet(f'DropZone {{ {styles[state]} }}')
+        self._icon.setText('✅' if state == 'filled' else '📂')
 
     def set_file(self, path: str):
         self.file_path = path
@@ -137,11 +199,11 @@ class DropZone(QFrame):
         try:
             kb   = os.path.getsize(path) // 1024
             date = datetime.fromtimestamp(os.path.getmtime(path)).strftime('%d.%m.%Y')
-            self._meta.setText(f'{kb:,} KB  •  {date}')
+            self._meta.setText(f'{kb:,} KB  ·  {date}')
         except Exception:
             self._meta.setText('')
         self._clear_btn.setVisible(True)
-        self._style(True)
+        self._apply_style('filled')
         self.file_changed.emit(path)
 
     def _clear(self):
@@ -149,7 +211,7 @@ class DropZone(QFrame):
         self._file.setText('')
         self._meta.setText('')
         self._clear_btn.setVisible(False)
-        self._style(False)
+        self._apply_style('empty')
         self.cleared.emit()
 
     def _choose(self):
@@ -164,16 +226,10 @@ class DropZone(QFrame):
             url = event.mimeData().urls()[0].toLocalFile().lower()
             if url.endswith(('.xlsx', '.xls')):
                 event.acceptProposedAction()
-                self.setStyleSheet("""
-                    DropZone {
-                        border: 2px dashed #2a7ae2;
-                        border-radius: 12px;
-                        background: #dbeafe;
-                    }
-                """)
+                self._apply_style('hover')
 
     def dragLeaveEvent(self, event):
-        self._style(self.file_path is not None)
+        self._apply_style('filled' if self.file_path else 'empty')
 
     def dropEvent(self, event: QDropEvent):
         urls = event.mimeData().urls()
@@ -181,9 +237,117 @@ class DropZone(QFrame):
             self.set_file(urls[0].toLocalFile())
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Results card
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Date range card ───────────────────────────────────────────────────────────
+
+class DateRangeCard(QFrame):
+    """Clean card with toggle + inline date pickers. No QGroupBox."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(f"""
+            DateRangeCard {{
+                background: {CARD};
+                border: 1px solid {BORDER};
+                border-radius: 14px;
+            }}
+        """)
+        self.setGraphicsEffect(_shadow(14, 3, 20))
+        self._build()
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 14, 18, 14)
+        root.setSpacing(12)
+
+        # ── Header row ────────────────────────────────────────────────
+        header = QHBoxLayout()
+        header.setSpacing(10)
+
+        icon_lbl = QLabel('📅')
+        icon_lbl.setStyleSheet('font-size: 16px; background: transparent;')
+
+        text_lbl = QLabel('סינון לפי טווח תאריכים')
+        text_lbl.setStyleSheet(f'color: {TEXT}; font-size: 13px; font-weight: 600; background: transparent;')
+
+        hint_lbl = QLabel('(אופציונלי)')
+        hint_lbl.setStyleSheet(f'color: {MUTED}; font-size: 11px; background: transparent;')
+
+        self.toggle = ToggleSwitch()
+        self.toggle.stateChanged.connect(self._on_toggle)
+
+        header.addWidget(icon_lbl)
+        header.addWidget(text_lbl)
+        header.addWidget(hint_lbl)
+        header.addStretch()
+        header.addWidget(self.toggle)
+        root.addLayout(header)
+
+        # ── Date pickers row (hidden by default) ───────────────────────
+        self._pickers = QWidget()
+        self._pickers.setStyleSheet('background: transparent;')
+        prow = QHBoxLayout(self._pickers)
+        prow.setContentsMargins(0, 0, 0, 0)
+        prow.setSpacing(10)
+
+        picker_style = f"""
+            QDateEdit {{
+                border: 1.5px solid {BORDER}; border-radius: 8px;
+                padding: 5px 10px; background: #f8fafc;
+                color: {TEXT}; font-size: 12px; min-width: 110px;
+            }}
+            QDateEdit:focus {{ border-color: {ACCENT}; background: #ffffff; }}
+            QDateEdit::drop-down {{ border: none; width: 22px; }}
+            QDateEdit::down-arrow {{ width: 10px; height: 10px; }}
+        """
+
+        from_lbl = QLabel('מ:')
+        from_lbl.setStyleSheet(f'color:{MUTED}; font-size:12px; background:transparent;')
+        self.date_from = QDateEdit()
+        self.date_from.setCalendarPopup(True)
+        self.date_from.setDate(QDate.currentDate().addDays(-30))
+        self.date_from.setDisplayFormat('dd.MM.yyyy')
+        self.date_from.setFixedHeight(34)
+        self.date_from.setStyleSheet(picker_style)
+
+        sep = QLabel('—')
+        sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sep.setStyleSheet(f'color:{MUTED}; font-size:14px; background:transparent;')
+
+        to_lbl = QLabel('עד:')
+        to_lbl.setStyleSheet(f'color:{MUTED}; font-size:12px; background:transparent;')
+        self.date_to = QDateEdit()
+        self.date_to.setCalendarPopup(True)
+        self.date_to.setDate(QDate.currentDate())
+        self.date_to.setDisplayFormat('dd.MM.yyyy')
+        self.date_to.setFixedHeight(34)
+        self.date_to.setStyleSheet(picker_style)
+
+        prow.addWidget(from_lbl)
+        prow.addWidget(self.date_from)
+        prow.addWidget(sep)
+        prow.addWidget(to_lbl)
+        prow.addWidget(self.date_to)
+        prow.addStretch()
+
+        self._pickers.setVisible(False)
+        root.addWidget(self._pickers)
+
+    def _on_toggle(self, state):
+        self._pickers.setVisible(bool(state))
+
+    def is_active(self):
+        return self.toggle.isChecked()
+
+    def get_start(self):
+        d = self.date_from.date()
+        return datetime(d.year(), d.month(), d.day())
+
+    def get_end(self):
+        d = self.date_to.date()
+        return datetime(d.year(), d.month(), d.day())
+
+
+# ── Results card ──────────────────────────────────────────────────────────────
 
 class ResultsCard(QFrame):
     def __init__(self, parent=None):
@@ -192,34 +356,36 @@ class ResultsCard(QFrame):
         self._output_path: str | None = None
         self.setStyleSheet("""
             ResultsCard {
-                background: #f0fdf4;
-                border: 1.5px solid #86efac;
-                border-radius: 10px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #ecfdf5, stop:1 #f0fdf4);
+                border: 1.5px solid #6ee7b7;
+                border-radius: 14px;
             }
         """)
+        self.setGraphicsEffect(_shadow(16, 4, 25))
+
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 12, 16, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(12)
 
         self._stats = QLabel()
         self._stats.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        f = QFont()
-        f.setPointSize(13)
-        f.setBold(True)
+        f = QFont(); f.setPointSize(13); f.setBold(True)
         self._stats.setFont(f)
-        self._stats.setStyleSheet('color: #15803d;')
+        self._stats.setStyleSheet('color: #065f46; background: transparent;')
 
-        self._open_btn = QPushButton('📂   פתח את הדוח')
+        self._open_btn = QPushButton('  פתח את הדוח  📂')
         self._open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._open_btn.setMinimumHeight(36)
-        self._open_btn.setStyleSheet("""
-            QPushButton {
-                background: #16a34a; color: white;
-                border-radius: 7px; padding: 6px 24px;
-                font-size: 13px; font-weight: bold;
-            }
-            QPushButton:hover  { background: #15803d; }
-            QPushButton:pressed { background: #166534; }
+        self._open_btn.setMinimumHeight(40)
+        self._open_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {SUCCESS}, stop:1 #10b981);
+                color: white; border-radius: 9px;
+                padding: 6px 28px; font-size: 14px; font-weight: bold;
+            }}
+            QPushButton:hover   {{ background: {SUCCESS_H}; }}
+            QPushButton:pressed {{ background: #065f46; }}
         """)
         self._open_btn.clicked.connect(self._open)
 
@@ -230,7 +396,7 @@ class ResultsCard(QFrame):
         self._output_path = path
         total = math_count + eng_count
         self._stats.setText(
-            f'✓  נמצאו {total} פערים  ·  מתמטיקה: {math_count}  |  אנגלית: {eng_count}'
+            f'✓   נמצאו {total} פערים   ·   מתמטיקה: {math_count}   |   אנגלית: {eng_count}'
         )
         self.setVisible(True)
 
@@ -243,19 +409,15 @@ class ResultsCard(QFrame):
             subprocess.run(['open', self._output_path], check=False)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Background worker
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Worker ────────────────────────────────────────────────────────────────────
 
 class Worker(QThread):
-    finished = pyqtSignal(str, int, int)   # path, math_count, eng_count
+    finished = pyqtSignal(str, int, int)
     error    = pyqtSignal(str)
     status   = pyqtSignal(str)
-    progress = pyqtSignal(int)             # 0–100
+    progress = pyqtSignal(int)
 
-    def __init__(self, darush: str, yitzua: str,
-                 use_filter: bool, date_start: datetime, date_end: datetime,
-                 output: str):
+    def __init__(self, darush, yitzua, use_filter, date_start, date_end, output):
         super().__init__()
         self.darush     = darush
         self.yitzua     = yitzua
@@ -295,7 +457,6 @@ class Worker(QThread):
 
             math_count = len([d for d in diffs if d['subject'] == 'מתמטיקה'])
             eng_count  = len([d for d in diffs if d['subject'] == 'אנגלית'])
-
             self.progress.emit(100)
             self.finished.emit(self.output, math_count, eng_count)
 
@@ -304,15 +465,13 @@ class Worker(QThread):
             self.error.emit(f'שגיאה:\n{exc}\n\n{traceback.format_exc()}')
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main window
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Main window ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('דוח פערים מתרגלים')
-        self.setMinimumWidth(640)
+        self.setMinimumWidth(660)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self._settings = QSettings('TutorDiff', 'TutorDiff')
         self._build_ui()
@@ -320,23 +479,41 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self):
         root_widget = QWidget()
-        root_widget.setStyleSheet('background: #f1f5f9;')
+        root_widget.setStyleSheet(f'background: {BG};')
         self.setCentralWidget(root_widget)
         root = QVBoxLayout(root_widget)
-        root.setContentsMargins(28, 24, 28, 24)
+        root.setContentsMargins(28, 22, 28, 28)
         root.setSpacing(14)
 
-        # Title
+        # ── Gradient header card ─────────────────────────────────────────
+        header = QWidget()
+        header.setStyleSheet(f"""
+            QWidget {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {PRIMARY}, stop:1 #2d5a8e);
+                border-radius: 16px;
+            }}
+        """)
+        header.setGraphicsEffect(_shadow(24, 7, 45))
+        h_lay = QVBoxLayout(header)
+        h_lay.setContentsMargins(24, 18, 24, 18)
+        h_lay.setSpacing(4)
+
         title = QLabel('דוח פערים מתרגלים')
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        f = QFont()
-        f.setPointSize(22)
-        f.setBold(True)
-        title.setFont(f)
-        title.setStyleSheet('color: #1a3c5e; margin-bottom: 2px;')
-        root.addWidget(title)
+        ft = QFont(); ft.setPointSize(22); ft.setBold(True)
+        title.setFont(ft)
+        title.setStyleSheet('color: #ffffff; background: transparent;')
 
-        # Drop zones (RTL: darush = right, yitzua = left)
+        subtitle = QLabel('השווה קבצי Excel וצור דוח פערים מסודר')
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet('color: rgba(255,255,255,0.6); font-size: 12px; background: transparent;')
+
+        h_lay.addWidget(title)
+        h_lay.addWidget(subtitle)
+        root.addWidget(header)
+
+        # ── Drop zones ───────────────────────────────────────────────────
         zones_row = QHBoxLayout()
         zones_row.setSpacing(14)
         self.darush_zone = DropZone('דרוש תיקון', 'גרור לכאן את הקובץ לתיקון')
@@ -349,103 +526,61 @@ class MainWindow(QMainWindow):
         zones_row.addWidget(self.yitzua_zone)
         root.addLayout(zones_row)
 
-        # Date range
-        date_group = QGroupBox('סינון לפי טווח תאריכים (אופציונלי)')
-        date_group.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        date_group.setStyleSheet("""
-            QGroupBox {
-                background: white;
-                border: 1px solid #e2e8f0;
-                border-radius: 10px;
-                margin-top: 8px;
-                padding: 8px 4px 4px 4px;
-                font-size: 12px;
-                color: #64748b;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                right: 12px; top: 0px;
-            }
-        """)
-        date_row = QHBoxLayout(date_group)
-        date_row.setSpacing(10)
+        # ── Date range card ──────────────────────────────────────────────
+        self.date_card = DateRangeCard()
+        root.addWidget(self.date_card)
 
-        self.use_dates = QCheckBox('פעיל')
-        self.use_dates.stateChanged.connect(self._toggle_dates)
-
-        self.date_from = QDateEdit()
-        self.date_from.setCalendarPopup(True)
-        self.date_from.setDate(QDate.currentDate().addDays(-30))
-        self.date_from.setEnabled(False)
-        self.date_from.setDisplayFormat('dd.MM.yyyy')
-
-        self.date_to = QDateEdit()
-        self.date_to.setCalendarPopup(True)
-        self.date_to.setDate(QDate.currentDate())
-        self.date_to.setEnabled(False)
-        self.date_to.setDisplayFormat('dd.MM.yyyy')
-
-        date_row.addWidget(self.use_dates)
-        date_row.addWidget(self.date_from)
-        date_row.addWidget(QLabel('—'))
-        date_row.addWidget(self.date_to)
-        date_row.addStretch()
-        root.addWidget(date_group)
-
-        # Progress bar (hidden until processing)
+        # ── Progress bar ─────────────────────────────────────────────────
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(6)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                background: #e2e8f0; border-radius: 3px; border: none;
-            }
-            QProgressBar::chunk {
+        self.progress_bar.setFixedHeight(5)
+        self.progress_bar.setStyleSheet(f"""
+            QProgressBar {{
+                background: #dde3ea; border-radius: 2px; border: none;
+            }}
+            QProgressBar::chunk {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #2a7ae2, stop:1 #60a5fa);
-                border-radius: 3px;
-            }
+                    stop:0 {ACCENT}, stop:1 #93c5fd);
+                border-radius: 2px;
+            }}
         """)
         self.progress_bar.setVisible(False)
         root.addWidget(self.progress_bar)
 
-        # Status label
         self.status_lbl = QLabel('')
         self.status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_lbl.setStyleSheet('color: #94a3b8; font-size: 12px; min-height: 16px;')
+        self.status_lbl.setStyleSheet(f'color: {MUTED}; font-size: 12px; min-height: 16px;')
         root.addWidget(self.status_lbl)
 
-        # Build button
-        self.build_btn = QPushButton('צור דוח')
-        self.build_btn.setMinimumHeight(50)
-        f2 = QFont()
-        f2.setPointSize(16)
-        f2.setBold(True)
-        self.build_btn.setFont(f2)
+        # ── Build button ─────────────────────────────────────────────────
+        self.build_btn = QPushButton('✦   צור דוח')
+        self.build_btn.setMinimumHeight(52)
+        fb = QFont(); fb.setPointSize(16); fb.setBold(True)
+        self.build_btn.setFont(fb)
         self.build_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.build_btn.setStyleSheet("""
-            QPushButton {
-                background: #1a3c5e; color: white;
-                border-radius: 10px;
-            }
-            QPushButton:hover   { background: #2a5a8e; }
-            QPushButton:pressed { background: #0f2540; }
-            QPushButton:disabled { background: #94a3b8; color: #e2e8f0; }
+        self.build_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {PRIMARY}, stop:1 {PRIMARY_H});
+                color: white; border-radius: 13px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {PRIMARY_H}, stop:1 #3a6fa8);
+            }}
+            QPushButton:pressed {{ background: #0f2540; }}
+            QPushButton:disabled {{ background: #94a3b8; color: #e2e8f0; }}
         """)
+        self.build_btn.setGraphicsEffect(_shadow(12, 4, 35))
         self.build_btn.clicked.connect(self._run)
         root.addWidget(self.build_btn)
 
-        # Results card (hidden until done)
+        # ── Results card ─────────────────────────────────────────────────
         self.results_card = ResultsCard()
         root.addWidget(self.results_card)
 
     # ── helpers ───────────────────────────────────────────────────────────────
-
-    def _toggle_dates(self, state):
-        on = state == Qt.CheckState.Checked.value
-        self.date_from.setEnabled(on)
-        self.date_to.setEnabled(on)
 
     def _restore_last_files(self):
         for key, zone in [('darush_path', self.darush_zone),
@@ -457,12 +592,10 @@ class MainWindow(QMainWindow):
     # ── run ───────────────────────────────────────────────────────────────────
 
     def _run(self):
-        darush = self.darush_zone.file_path
-        yitzua = self.yitzua_zone.file_path
-        if not darush:
+        if not self.darush_zone.file_path:
             QMessageBox.warning(self, 'חסר קובץ', 'יש לבחור קובץ "דרוש תיקון".')
             return
-        if not yitzua:
+        if not self.yitzua_zone.file_path:
             QMessageBox.warning(self, 'חסר קובץ', 'יש לבחור קובץ "ייצוא שיטס".')
             return
 
@@ -474,9 +607,6 @@ class MainWindow(QMainWindow):
         if not output.endswith('.xlsx'):
             output += '.xlsx'
 
-        q_from = self.date_from.date()
-        q_to   = self.date_to.date()
-
         self.results_card.hide_results()
         self.build_btn.setEnabled(False)
         self.progress_bar.setValue(0)
@@ -484,10 +614,11 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText('מעבד…')
 
         self._worker = Worker(
-            darush, yitzua,
-            self.use_dates.isChecked(),
-            date_start=datetime(q_from.year(), q_from.month(), q_from.day()),
-            date_end=datetime(q_to.year(),   q_to.month(),   q_to.day()),
+            self.darush_zone.file_path,
+            self.yitzua_zone.file_path,
+            self.date_card.is_active(),
+            date_start=self.date_card.get_start(),
+            date_end=self.date_card.get_end(),
             output=output,
         )
         self._worker.finished.connect(self._on_done)
