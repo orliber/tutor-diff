@@ -15,13 +15,13 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QDateEdit, QMessageBox, QFrame,
     QSizePolicy, QProgressBar, QGraphicsDropShadowEffect,
-    QAbstractButton,
+    QAbstractButton, QCalendarWidget,
 )
 from PyQt6.QtCore import (
     Qt, QDate, QThread, pyqtSignal, QSettings, QSize,
-    QVariantAnimation, QEasingCurve,
+    QVariantAnimation, QEasingCurve, QLocale, QTimer,
 )
-from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QColor, QPainter, QMouseEvent
+from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QColor, QPainter
 
 from openpyxl import load_workbook
 from build_excel import run_comparison, build_report, fix_xlsx
@@ -37,6 +37,115 @@ SUCCESS_H = '#047857'
 MUTED     = '#64748b'
 BORDER    = '#dde3ea'
 TEXT      = '#1e293b'
+
+
+# ── Styled calendar popup ─────────────────────────────────────────────────────
+
+class StyledCalendar(QCalendarWidget):
+    """Beautiful calendar widget — used via QDateEdit.setCalendarWidget()."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setGridVisible(False)
+        self.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+        self.setHorizontalHeaderFormat(QCalendarWidget.HorizontalHeaderFormat.SingleLetterDayNames)
+        self.setFirstDayOfWeek(Qt.DayOfWeek.Sunday)
+        self.setLocale(QLocale(QLocale.Language.Hebrew, QLocale.Country.Israel))
+        self.setMinimumWidth(290)
+        self.setMinimumHeight(270)
+        self._apply_style()
+        QTimer.singleShot(0, self._style_nav_buttons)
+
+    def _apply_style(self):
+        self.setStyleSheet(f"""
+            QCalendarWidget QWidget#qt_calendar_navigationbar {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {PRIMARY}, stop:1 {PRIMARY_H});
+                min-height: 50px;
+                padding: 0 8px;
+            }}
+            QCalendarWidget QToolButton {{
+                color: white; background: transparent;
+                border: none; font-size: 14px; font-weight: bold;
+                padding: 4px 10px; border-radius: 7px;
+            }}
+            QCalendarWidget QToolButton:hover {{
+                background: rgba(255,255,255,0.18);
+            }}
+            QCalendarWidget QToolButton::menu-indicator {{
+                image: none; width: 0;
+            }}
+            QCalendarWidget QSpinBox {{
+                color: white;
+                background: rgba(255,255,255,0.15);
+                border: 1px solid rgba(255,255,255,0.25);
+                border-radius: 5px; padding: 2px 6px;
+                font-size: 13px; font-weight: bold;
+            }}
+            QCalendarWidget QSpinBox::up-button,
+            QCalendarWidget QSpinBox::down-button {{ width: 0; height: 0; }}
+            QCalendarWidget QAbstractItemView:enabled {{
+                color: {TEXT}; background: white;
+                selection-background-color: transparent;
+                selection-color: white;
+                outline: none; font-size: 13px;
+            }}
+            QCalendarWidget QAbstractItemView:disabled {{ color: #cbd5e1; }}
+            QCalendarWidget QWidget {{ alternate-background-color: white; }}
+        """)
+
+    def _style_nav_buttons(self):
+        for name, arrow in (('qt_calendar_prevmonth', '‹'),
+                             ('qt_calendar_nextmonth', '›')):
+            btn = self.findChild(QPushButton, name)
+            if btn:
+                btn.setText(arrow)
+                btn.setStyleSheet("""
+                    QPushButton {
+                        color: white;
+                        background: rgba(255,255,255,0.15);
+                        border: none; border-radius: 7px;
+                        font-size: 20px; font-weight: 300;
+                        min-width: 32px; max-width: 32px;
+                        min-height: 32px; max-height: 32px;
+                    }
+                    QPushButton:hover  { background: rgba(255,255,255,0.28); }
+                    QPushButton:pressed { background: rgba(255,255,255,0.08); }
+                """)
+
+    def paintCell(self, painter, rect, date):
+        if not date.isValid():
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        today    = QDate.currentDate()
+        selected = self.selectedDate()
+        other_mo = date.month() != self.monthShown()
+
+        d = min(rect.width(), rect.height()) - 8
+        x = rect.center().x() - d // 2
+        y = rect.center().y() - d // 2
+
+        if date == selected:
+            painter.setBrush(QColor(ACCENT))
+            painter.drawEllipse(x, y, d, d)
+            painter.setPen(QColor('#ffffff'))
+            f = QFont(); f.setPointSize(12); f.setBold(True)
+        elif date == today:
+            painter.setBrush(QColor('#dbeafe'))
+            painter.drawEllipse(x, y, d, d)
+            painter.setPen(QColor(ACCENT))
+            f = QFont(); f.setPointSize(12); f.setBold(True)
+        else:
+            color = '#b8c8d8' if other_mo else ('#64748b' if date.dayOfWeek() == 7 else TEXT)
+            painter.setPen(QColor(color))
+            f = QFont(); f.setPointSize(12)
+
+        painter.setFont(f)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(date.day()))
+        painter.restore()
 
 
 def _shadow(blur=20, y=5, alpha=30):
@@ -74,7 +183,7 @@ class ToggleSwitch(QAbstractButton):
         self._anim.setEndValue(22.0 if checked else 3.0)
         self._anim.start()
 
-    def paintEvent(self, event):
+    def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
@@ -307,6 +416,7 @@ class DateRangeCard(QFrame):
         from_lbl.setStyleSheet(f'color:{MUTED}; font-size:12px; background:transparent;')
         self.date_from = QDateEdit()
         self.date_from.setCalendarPopup(True)
+        self.date_from.setCalendarWidget(StyledCalendar())
         self.date_from.setDate(QDate.currentDate().addDays(-30))
         self.date_from.setDisplayFormat('dd.MM.yyyy')
         self.date_from.setFixedHeight(34)
@@ -320,6 +430,7 @@ class DateRangeCard(QFrame):
         to_lbl.setStyleSheet(f'color:{MUTED}; font-size:12px; background:transparent;')
         self.date_to = QDateEdit()
         self.date_to.setCalendarPopup(True)
+        self.date_to.setCalendarWidget(StyledCalendar())
         self.date_to.setDate(QDate.currentDate())
         self.date_to.setDisplayFormat('dd.MM.yyyy')
         self.date_to.setFixedHeight(34)
