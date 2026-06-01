@@ -149,14 +149,14 @@ class Worker(QThread):
     status   = pyqtSignal(str)
 
     def __init__(self, darush: str, yitzua: str,
-                 use_filter: bool, start: datetime, end: datetime,
+                 use_filter: bool, date_start: datetime, date_end: datetime,
                  output: str):
         super().__init__()
         self.darush     = darush
         self.yitzua     = yitzua
         self.use_filter = use_filter
-        self.start      = start
-        self.end        = end
+        self.date_start = date_start
+        self.date_end   = date_end
         self.output     = output
 
     def run(self):
@@ -177,9 +177,9 @@ class Worker(QThread):
             diffs, tfm, drange = run_comparison(wb1, wb2)
 
             if self.use_filter:
-                diffs  = [d for d in diffs if self.start <= d['date'] <= self.end]
-                drange = (f"{self.start.strftime('%d.%m.%Y')} — "
-                          f"{self.end.strftime('%d.%m.%Y')}")
+                diffs  = [d for d in diffs if self.date_start <= d['date'] <= self.date_end]
+                drange = (f"{self.date_start.strftime('%d.%m.%Y')} — "
+                          f"{self.date_end.strftime('%d.%m.%Y')}")
 
             if not diffs:
                 self.error.emit('לא נמצאו פערים בטווח התאריכים שנבחר.')
@@ -324,8 +324,8 @@ class MainWindow(QMainWindow):
         self._worker = Worker(
             darush, yitzua,
             self.use_dates.isChecked(),
-            start, end,
-            output,
+            date_start=start, date_end=end,
+            output=output,
         )
         self._worker.finished.connect(self._on_done)
         self._worker.error.connect(self._on_error)
