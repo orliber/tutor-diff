@@ -13,13 +13,13 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QDateEdit, QMessageBox, QFrame,
+    QPushButton, QLabel, QMessageBox, QFrame,
     QSizePolicy, QProgressBar, QGraphicsDropShadowEffect,
     QAbstractButton, QCalendarWidget,
 )
 from PyQt6.QtCore import (
     Qt, QDate, QThread, pyqtSignal, QSettings, QSize,
-    QVariantAnimation, QEasingCurve, QLocale, QTimer,
+    QVariantAnimation, QEasingCurve, QLocale, QTimer, QPoint,
 )
 from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QColor, QPainter
 
@@ -146,6 +146,58 @@ class StyledCalendar(QCalendarWidget):
         painter.setFont(f)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(date.day()))
         painter.restore()
+
+
+# ── Date picker button ────────────────────────────────────────────────────────
+
+class DatePickerButton(QPushButton):
+    """Button that shows the selected date and opens StyledCalendar on click."""
+    dateChanged = pyqtSignal(QDate)
+
+    def __init__(self, initial: QDate, parent=None):
+        super().__init__(parent)
+        self._date = initial
+        self._cal  = StyledCalendar()
+        self._cal.setWindowFlags(
+            Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
+        )
+        self._cal.setSelectedDate(initial)
+        self._cal.clicked.connect(self._pick)
+        self.clicked.connect(self._open)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(36)
+        self.setMinimumWidth(140)
+        self.setStyleSheet(f"""
+            QPushButton {{
+                border: 1.5px solid {BORDER}; border-radius: 8px;
+                padding: 5px 14px; background: #f8fafc;
+                color: {TEXT}; font-size: 13px; text-align: center;
+            }}
+            QPushButton:hover {{
+                background: white; border-color: {ACCENT};
+            }}
+        """)
+        self._refresh()
+
+    def _refresh(self):
+        self.setText('📅  ' + self._date.toString('dd.MM.yyyy'))
+
+    def _open(self):
+        self._cal.setSelectedDate(self._date)
+        # Position below the button
+        pos = self.mapToGlobal(QPoint(0, self.height() + 4))
+        self._cal.move(pos)
+        self._cal.show()
+        self._cal.raise_()
+
+    def _pick(self, date: QDate):
+        self._date = date
+        self._refresh()
+        self._cal.hide()
+        self.dateChanged.emit(date)
+
+    def date(self) -> QDate:
+        return self._date
 
 
 def _shadow(blur=20, y=5, alpha=30):
@@ -401,26 +453,9 @@ class DateRangeCard(QFrame):
         prow.setContentsMargins(0, 0, 0, 0)
         prow.setSpacing(10)
 
-        picker_style = f"""
-            QDateEdit {{
-                border: 1.5px solid {BORDER}; border-radius: 8px;
-                padding: 5px 10px; background: #f8fafc;
-                color: {TEXT}; font-size: 12px; min-width: 110px;
-            }}
-            QDateEdit:focus {{ border-color: {ACCENT}; background: #ffffff; }}
-            QDateEdit::drop-down {{ border: none; width: 22px; }}
-            QDateEdit::down-arrow {{ width: 10px; height: 10px; }}
-        """
-
         from_lbl = QLabel('מ:')
         from_lbl.setStyleSheet(f'color:{MUTED}; font-size:12px; background:transparent;')
-        self.date_from = QDateEdit()
-        self.date_from.setCalendarPopup(True)
-        self.date_from.setCalendarWidget(StyledCalendar())
-        self.date_from.setDate(QDate.currentDate().addDays(-30))
-        self.date_from.setDisplayFormat('dd.MM.yyyy')
-        self.date_from.setFixedHeight(34)
-        self.date_from.setStyleSheet(picker_style)
+        self.date_from = DatePickerButton(QDate.currentDate().addDays(-30))
 
         sep = QLabel('—')
         sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -428,13 +463,7 @@ class DateRangeCard(QFrame):
 
         to_lbl = QLabel('עד:')
         to_lbl.setStyleSheet(f'color:{MUTED}; font-size:12px; background:transparent;')
-        self.date_to = QDateEdit()
-        self.date_to.setCalendarPopup(True)
-        self.date_to.setCalendarWidget(StyledCalendar())
-        self.date_to.setDate(QDate.currentDate())
-        self.date_to.setDisplayFormat('dd.MM.yyyy')
-        self.date_to.setFixedHeight(34)
-        self.date_to.setStyleSheet(picker_style)
+        self.date_to = DatePickerButton(QDate.currentDate())
 
         prow.addWidget(from_lbl)
         prow.addWidget(self.date_from)
