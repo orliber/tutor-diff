@@ -4,6 +4,7 @@
 set -euo pipefail
 
 APP_NAME="דוח פערים מתרגלים"
+ZIP_NAME="דוח_פערים_מתרגלים.zip"
 VENV_DIR=".venv"
 
 # Create/reuse virtualenv
@@ -29,6 +30,17 @@ pyinstaller \
     --hidden-import "openpyxl.styles.differential" \
     app.py
 
+# Package as zip for sharing (ditto preserves macOS .app structure correctly)
+echo "→ Creating zip for sharing…"
+rm -f "dist/$ZIP_NAME"
+ditto -c -k --keepParent "dist/$APP_NAME.app" "dist/$ZIP_NAME"
+
 echo ""
-echo "✓ Done — bundle is at:  dist/$APP_NAME.app"
-echo "  Drag it to /Applications to install."
+echo "✓ הושלם!"
+echo ""
+echo "  קובץ לשליחה:  dist/$ZIP_NAME"
+echo ""
+echo "  הוראות לנמענת:"
+echo "  1. פתחי את ה-zip"
+echo "  2. לחצי פעמיים על האפליקציה"
+echo "  3. אם Mac מבקש אישור: לחצי קליק ימני → פתח → פתח"
