@@ -305,8 +305,9 @@ class MainWindow(QMainWindow):
             return
 
         from PyQt6.QtWidgets import QFileDialog
+        default_path = os.path.join(os.path.expanduser('~'), 'Desktop', 'דוח_פערים.xlsx')
         output, _ = QFileDialog.getSaveFileName(
-            self, 'שמור דוח', 'דוח_פערים.xlsx', 'Excel (*.xlsx)'
+            self, 'שמור דוח', default_path, 'Excel (*.xlsx)'
         )
         if not output:
             return
