@@ -318,6 +318,11 @@ def tutor_subject(tutor_first, slot_lbl):
     if tutor_first in MATH_TUTORS and tutor_first not in ENG_TUTORS: return 'מתמטיקה'
     return DEFAULT_SUBJECT
 
+def _time_to_min(t):
+    """Convert 'HH:MM' string to total minutes. Returns -9999 on error."""
+    try: h, m = str(t).split(':')[:2]; return int(h) * 60 + int(m)
+    except: return -9999
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ROW HEIGHT CALCULATION
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -400,15 +405,22 @@ def run_comparison(wb1, wb2):
                 darush[key].update(sd['students'])
 
     darush_dates = set(k[0] for k in darush)
+    darush_tutor_dates = set((k[0], k[1]) for k in darush)
+    darush_session_count = Counter((k[0], k[1]) for k in darush)
 
     # ── Parse ייצוא שיטס ──
     yitzua = []
+    empty_sessions = []
+    yitzua_sheet_dates = set()   # all dates covered by any yitzua sheet header
     for sn in wb2.sheetnames:
         ws = wb2[sn]
         day_cols = {}
         for c in range(1, ws.max_column + 1):
             v = ws.cell(1, c).value
             if v and 'יום' in str(v): day_cols[c] = str(v)
+        for v in day_cols.values():
+            d = parse_date(v, _inferred_year)
+            if d: yitzua_sheet_dates.add(d)
         for col in range(1, ws.max_column + 1):
             raw = str(ws.cell(2, col).value or '').strip()
             if not raw: continue
@@ -423,24 +435,40 @@ def run_comparison(wb1, wb2):
             else:
                 ft = xtime(r3) if r3 else ''
                 fs = detect_subject_label(str(r3)) if r3 else None
+            col_had_students = False
             for t, sd in parse_slots(ws, col, 4, ft, fs).items():
                 if sd['students']:
+                    col_had_students = True
                     subj = tutor_subject(canon, sd['subject'])
                     full = tutor_full_map.get(canon, canon)
                     yitzua.append({'date': date_obj, 'canon': canon, 'tutor': full,
                                    'time': t, 'students': sd['students'],
                                    'subject': subj, 'location': loc})
+            if not col_had_students and (date_obj, canon) in darush_tutor_dates:
+                full = tutor_full_map.get(canon, canon)
+                empty_sessions.append({'date': date_obj, 'canon': canon, 'tutor': full,
+                                       'subject': tutor_subject(canon, None), 'location': loc,
+                                       'count': darush_session_count[(date_obj, canon)]})
 
     # ── Compare ──
     differences = []
+    processed_darush_keys = set()
     for sy in yitzua:
         key = (sy['date'], sy['canon'], sy['time'])
         if key not in darush:
+            # Try exact time + fuzzy tutor name
             alts = {k: v for k, v in darush.items()
                     if k[0] == sy['date'] and k[2] == sy['time'] and
                     (sy['canon'] in k[1] or k[1] in sy['canon'])}
+            if not alts:
+                # Try fuzzy time (±15 min) + exact canon
+                sy_min = _time_to_min(sy['time'])
+                alts = {k: v for k, v in darush.items()
+                        if k[0] == sy['date'] and k[1] == sy['canon'] and
+                        sy_min >= 0 and 0 < abs(_time_to_min(k[2]) - sy_min) <= 15}
             if not alts: continue
             key = next(iter(alts))
+        processed_darush_keys.add(key)
         d_sts = darush[key]
         y_sts = sy['students']
         md, my = set(), set()
@@ -462,6 +490,27 @@ def run_comparison(wb1, wb2):
                                      'attendance': None,
                                      'subject': sy['subject'], 'location': sy['location']})
 
+    # ── Sessions in darush but absent from yitzua → all students are "להסיר" ──
+    # Skip (date, canon) pairs handled as empty yitzua columns, and dates with no yitzua sheet
+    empty_covered = set((es['date'], es['canon']) for es in empty_sessions)
+    for key in darush:
+        if key in processed_darush_keys:
+            continue
+        date_obj, canon, t = key
+        if date_obj not in yitzua_sheet_dates:
+            continue   # yitzua file has no sheet for this week — not comparable
+        if (date_obj, canon) in empty_covered:
+            continue
+        d_sts = darush[key]
+        full = tutor_full_map.get(canon, canon)
+        subj = tutor_subject(canon, None)
+        for dn in d_sts:
+            if not is_junk(dn):
+                differences.append({'tutor': full, 'date': date_obj, 'time': t,
+                                     'type': 'להסיר', 'student': dn,
+                                     'attendance': None,
+                                     'subject': subj, 'location': None})
+
     # ── Date range ──
     all_dates = [d['date'] for d in differences if d['date']]
     if not all_dates: all_dates = all_darush_dates
@@ -469,13 +518,13 @@ def run_comparison(wb1, wb2):
     date_to   = max(all_dates).strftime('%d.%m.%Y')
     date_range_str = f"{date_from} — {date_to}"
 
-    return differences, tutor_full_map, date_range_str
+    return differences, tutor_full_map, date_range_str, empty_sessions
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EXCEL BUILDER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def build_report(differences, tutor_full_map, date_range_str, output_path):
+def build_report(differences, tutor_full_map, date_range_str, output_path, empty_sessions=None):
     def sfill(h): return PatternFill(fill_type='solid', fgColor=h)
     def fnt(bold=False, color='222222', size=10, italic=False):
         return Font(name='Arial', bold=bold, color=color, size=size, italic=italic)
@@ -511,13 +560,15 @@ def build_report(differences, tutor_full_map, date_range_str, output_path):
         h = 'FF' + BRANCH_COLORS.get(loc, BRANCH_COLORS['default'])
         return sfill(h)
 
+    WARN_FILL = sfill('FFFFD54F')
+
     all_tutors_full = sorted(set(tutor_full_map.values()))
     math_tutors = [t for t in all_tutors_full if t.split()[0] in MATH_TUTORS]
     eng_tutors  = [t for t in all_tutors_full if t.split()[0] in ENG_TUTORS]
     other       = [t for t in all_tutors_full if t not in math_tutors and t not in eng_tutors]
     math_tutors += other
 
-    def make_sheet(wb, title, sheet_diffs, tutors):
+    def make_sheet(wb, title, sheet_diffs, tutors, empty_sessions_map=None):
         ws = wb.create_sheet(title=title)
         ws.sheet_view.rightToLeft = True
         for col, w in zip(range(1, 8), [3, 14, 3, 16, 56, 10, 14]):
@@ -561,15 +612,17 @@ def build_report(differences, tutor_full_map, date_range_str, output_path):
 
         td = defaultdict(list)
         for d in sheet_diffs: td[d['tutor']].append(d)
+        esm = empty_sessions_map or {}
 
         data_start = row = 4
         for ti, tutor in enumerate(sorted(tutors, key=lambda x: x.split()[0])):
             diffs = td.get(tutor, [])
             by_dt = defaultdict(list)
             for d in diffs: by_dt[(d['date'], d['time'])].append(d)
+            es_list = sorted(esm.get(tutor, []), key=lambda x: x['date'])
             alt = sfill('FFF7FBFF') if ti % 2 == 0 else sfill('FFFFFFFF')
 
-            if not by_dt:
+            if not by_dt and not es_list:
                 ws.row_dimensions[row].height = 18
                 for col, (txt, ah) in [(4, ('~', 'center')), (5, ('ללא פערים', 'right')), (6, ('~', 'center'))]:
                     c = ws.cell(row, col, txt)
@@ -609,6 +662,32 @@ def build_report(differences, tutor_full_map, date_range_str, output_path):
 
                     first_row = False; row += 1
 
+                for es in es_list:
+                    note_text = f"ייצוא שיטס ריק — יש {es['count']} שיעורים בדרוש תיקון. יש למלא בייצוא."
+                    ws.row_dimensions[row].height = 18
+
+                    c = ws.cell(row, 4, es['location'] or '—')
+                    c.fill = WARN_FILL; c.border = THIN
+                    c.alignment = align('center', False)
+                    c.font = fnt(bold=True, color='5D4037', size=9)
+
+                    c = ws.cell(row, 5, note_text)
+                    c.fill = WARN_FILL; c.border = THIN
+                    c.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True, readingOrder=2)
+                    c.font = fnt(bold=True, color='5D4037', size=10)
+
+                    c = ws.cell(row, 6, es['date'].strftime('%d.%m'))
+                    c.fill = WARN_FILL; c.border = THIN
+                    c.alignment = align('center', False)
+                    c.font = fnt(True, '5D4037')
+
+                    c = ws.cell(row, 7, tutor.split()[0] if first_row else '')
+                    c.font = fnt(True, '1A3C5E') if first_row else fnt()
+                    c.fill = WARN_FILL; c.border = THIN
+                    c.alignment = align('right', False)
+
+                    first_row = False; row += 1
+
         # Branch sidebar col B
         for bi, branch in enumerate(BRANCHES_ORDER):
             r = data_start + bi
@@ -627,8 +706,16 @@ def build_report(differences, tutor_full_map, date_range_str, output_path):
     wb = Workbook(); wb.remove(wb.active)
     math_diffs = [d for d in differences if d['subject'] == 'מתמטיקה']
     eng_diffs  = [d for d in differences if d['subject'] == 'אנגלית']
-    make_sheet(wb, 'מתמטיקה', math_diffs, math_tutors)
-    make_sheet(wb, 'אנגלית',  eng_diffs,  eng_tutors)
+
+    def _es_map(subj):
+        m = defaultdict(list)
+        for es in (empty_sessions or []):
+            if es['subject'] == subj:
+                m[es['tutor']].append(es)
+        return m
+
+    make_sheet(wb, 'מתמטיקה', math_diffs, math_tutors, _es_map('מתמטיקה'))
+    make_sheet(wb, 'אנגלית',  eng_diffs,  eng_tutors,  _es_map('אנגלית'))
     wb.save(output_path)
     print(f"Saved: {output_path}")
     print(f"Math: {len(math_diffs)} | English: {len(eng_diffs)} | Range: {date_range_str}")

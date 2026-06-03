@@ -661,14 +661,16 @@ class Worker(QThread):
             # ────────────────────────────────────────────────────────────
 
             self.status.emit('משווה…');         self.progress.emit(50)
-            diffs, tfm, drange = run_comparison(wb1, wb2)
+            diffs, tfm, drange, empty_sessions = run_comparison(wb1, wb2)
 
             if self.use_filter:
                 diffs  = [d for d in diffs if self.date_start <= d['date'] <= self.date_end]
+                empty_sessions = [es for es in empty_sessions
+                                  if self.date_start <= es['date'] <= self.date_end]
                 drange = (f"{self.date_start.strftime('%d.%m.%Y')} — "
                           f"{self.date_end.strftime('%d.%m.%Y')}")
 
-            if not diffs:
+            if not diffs and not empty_sessions:
                 if self.use_filter:
                     self.error.emit(
                         f'לא נמצאו פערים בין '
@@ -680,7 +682,7 @@ class Worker(QThread):
                 return
 
             self.status.emit('בונה דוח…');     self.progress.emit(80)
-            build_report(diffs, tfm, drange, self.output)
+            build_report(diffs, tfm, drange, self.output, empty_sessions)
 
             math_count = len([d for d in diffs if d['subject'] == 'מתמטיקה'])
             eng_count  = len([d for d in diffs if d['subject'] == 'אנגלית'])
