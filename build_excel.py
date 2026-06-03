@@ -663,7 +663,9 @@ def build_report(differences, tutor_full_map, date_range_str, output_path, empty
                     first_row = False; row += 1
 
                 for es in es_list:
-                    note_text = f"ייצוא שיטס ריק — יש {es['count']} שיעורים בדרוש תיקון. יש למלא בייצוא."
+                    _cnt = es['count']
+                    _slot_word = 'שיעור' if _cnt == 1 else 'שיעורים'
+                    note_text = f"ייצוא שיטס ריק — יש {_cnt} {_slot_word} בדרוש תיקון. יש למלא בייצוא."
                     ws.row_dimensions[row].height = 18
 
                     c = ws.cell(row, 4, es['location'] or '—')
