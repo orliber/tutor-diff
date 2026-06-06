@@ -7,6 +7,7 @@ PyQt6 wrapper around build_excel.py.
 import sys
 import os
 import re
+import shutil
 import tempfile
 import subprocess
 from datetime import datetime
@@ -14,16 +15,16 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLabel, QMessageBox, QFrame,
+    QPushButton, QLabel, QFrame, QDialog, QScrollArea,
     QSizePolicy, QProgressBar, QGraphicsDropShadowEffect,
     QAbstractButton, QCalendarWidget,
 )
 from PyQt6.QtCore import (
-    Qt, QDate, QThread, pyqtSignal, QSettings, QSize,
+    Qt, QDate, QThread, pyqtSignal, QSettings, QSize, QStandardPaths,
     QVariantAnimation, QEasingCurve, QLocale, QTimer, QPoint,
     QEvent, QRect,
 )
-from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QColor, QPainter
+from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QColor, QPainter, QShortcut, QKeySequence
 
 from openpyxl import load_workbook
 from build_excel import run_comparison, build_report, fix_xlsx
@@ -39,6 +40,26 @@ SUCCESS_H = '#047857'
 MUTED     = '#64748b'
 BORDER    = '#dde3ea'
 TEXT      = '#1e293b'
+
+
+# ── File-type detection ───────────────────────────────────────────────────────
+
+def _detect_file_type(path: str) -> 'str | None':
+    """Return 'darush', 'yitzua', or None by inspecting row 1 of the workbook."""
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        for sn in wb.sheetnames:
+            ws = wb[sn]
+            first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+            vals = [str(v or '') for v in first_row[:60]]
+            if any('יום' in v for v in vals):
+                wb.close(); return 'yitzua'
+            if any(re.search(r'\d{1,2}[./]\d{1,2}', v) for v in vals):
+                wb.close(); return 'darush'
+        wb.close()
+    except Exception:
+        pass
+    return None
 
 
 # ── Styled calendar popup ─────────────────────────────────────────────────────
@@ -146,11 +167,15 @@ class StyledCalendar(QCalendarWidget):
                     QPushButton:pressed { background: rgba(255,255,255,0.08); }
                 """)
 
+    def updateCells(self):
+        self._cell_rects.clear()  # stale rects from previous months would cause wrong hover
+        super().updateCells()
+
     def paintCell(self, painter, rect, date):
         if not date.isValid():
             return
 
-        # Store rect for hover hit-testing
+        # Store rect for hover hit-testing (cleared on each updateCells cycle)
         self._cell_rects[date] = QRect(
             int(rect.x()), int(rect.y()),
             int(rect.width()), int(rect.height())
@@ -255,6 +280,45 @@ def _shadow(blur=20, y=5, alpha=30):
     return e
 
 
+def _alert(parent, title: str, msg: str, kind: str = 'warning'):
+    """Styled alert — replaces QMessageBox to avoid the white-text-on-dark-theme bug."""
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+    dlg.setStyleSheet(f'background: {CARD};')
+    dlg.setMinimumWidth(360)
+    dlg.setMaximumWidth(520)
+
+    lay = QVBoxLayout(dlg)
+    lay.setContentsMargins(24, 20, 24, 20)
+    lay.setSpacing(16)
+
+    lbl = QLabel(msg)
+    lbl.setWordWrap(True)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    if kind == 'error':
+        lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        lbl.setStyleSheet(f'color: {TEXT}; font-size: 11px; font-family: monospace; background: transparent;')
+    else:
+        lbl.setStyleSheet(f'color: {TEXT}; font-size: 13px; background: transparent;')
+    lay.addWidget(lbl)
+
+    btn_color  = '#d97706' if kind == 'warning' else '#dc2626'
+    btn_hcolor = '#b45309' if kind == 'warning' else '#b91c1c'
+    ok_btn = QPushButton('אישור')
+    ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    ok_btn.setStyleSheet(f"""
+        QPushButton {{
+            background: {btn_color}; color: white; border-radius: 8px;
+            padding: 8px 28px; font-size: 13px; font-weight: bold; border: none;
+        }}
+        QPushButton:hover {{ background: {btn_hcolor}; }}
+    """)
+    ok_btn.clicked.connect(dlg.accept)
+    lay.addWidget(ok_btn, 0, Qt.AlignmentFlag.AlignCenter)
+    dlg.exec()
+
+
 # ── Animated iOS-style toggle ─────────────────────────────────────────────────
 
 class ToggleSwitch(QAbstractButton):
@@ -293,22 +357,6 @@ class ToggleSwitch(QAbstractButton):
 
     def sizeHint(self):
         return QSize(46, 26)
-
-
-# ── Base card ─────────────────────────────────────────────────────────────────
-
-class Card(QFrame):
-    def __init__(self, parent=None, radius=14):
-        super().__init__(parent)
-        self._radius = radius
-        self.setStyleSheet(f"""
-            Card {{
-                background: {CARD};
-                border-radius: {radius}px;
-                border: 1px solid {BORDER};
-            }}
-        """)
-        self.setGraphicsEffect(_shadow())
 
 
 # ── Drop zone ─────────────────────────────────────────────────────────────────
@@ -406,6 +454,7 @@ class DropZone(QFrame):
         self.file_path = path
         name = Path(path).name
         self._file.setText(name if len(name) <= 36 else name[:33] + '…')
+        self._file.setToolTip(path)
         try:
             kb   = os.path.getsize(path) // 1024
             date = datetime.fromtimestamp(os.path.getmtime(path)).strftime('%d.%m.%Y')
@@ -419,6 +468,7 @@ class DropZone(QFrame):
     def _clear(self):
         self.file_path = None
         self._file.setText('')
+        self._file.setToolTip('')
         self._meta.setText('')
         self._clear_btn.setVisible(False)
         self._apply_style('empty')
@@ -581,12 +631,19 @@ class ResultsCard(QFrame):
         lay.addWidget(self._stats)
         lay.addWidget(self._open_btn, 0, Qt.AlignmentFlag.AlignCenter)
 
-    def show_results(self, path: str, math_count: int, eng_count: int):
+    def show_results(self, path: str, math_count: int, eng_count: int,
+                     mark_count: int = 0, warnings_count: int = 0):
         self._output_path = path
         total = math_count + eng_count
-        self._stats.setText(
-            f'✓   נמצאו {total} פערים   ·   מתמטיקה: {math_count}   |   אנגלית: {eng_count}'
-        )
+        lines = [f'✓   נמצאו {total} פערים   ·   מתמטיקה: {math_count}   |   אנגלית: {eng_count}']
+        extra = []
+        if mark_count:
+            extra.append(f'לסמן באדום: {mark_count}')
+        if warnings_count:
+            extra.append(f'אזהרות: {warnings_count}')
+        if extra:
+            lines.append('   ·   '.join(extra))
+        self._stats.setText('\n'.join(lines))
         self.setVisible(True)
 
     def hide_results(self):
@@ -601,7 +658,7 @@ class ResultsCard(QFrame):
 # ── Worker ────────────────────────────────────────────────────────────────────
 
 class Worker(QThread):
-    finished = pyqtSignal(str, int, int, str)   # tmp_path, math, eng, drange
+    finished = pyqtSignal(str, int, int, int, int, str)   # tmp_path, math, eng, mark, warnings, drange
     error    = pyqtSignal(str)
     status   = pyqtSignal(str)
     progress = pyqtSignal(int)
@@ -616,11 +673,10 @@ class Worker(QThread):
         self.output     = output
 
     def run(self):
+        tmp     = tempfile.mkdtemp()
+        d_fixed = os.path.join(tmp, 'd.xlsx')
+        y_fixed = os.path.join(tmp, 'y.xlsx')
         try:
-            tmp     = tempfile.mkdtemp()
-            d_fixed = os.path.join(tmp, 'd.xlsx')
-            y_fixed = os.path.join(tmp, 'y.xlsx')
-
             self.status.emit('מתקן קבצים…');   self.progress.emit(10)
             fix_xlsx(self.darush, d_fixed)
             fix_xlsx(self.yitzua, y_fixed)
@@ -661,16 +717,18 @@ class Worker(QThread):
             # ────────────────────────────────────────────────────────────
 
             self.status.emit('משווה…');         self.progress.emit(50)
-            diffs, tfm, drange, empty_sessions = run_comparison(wb1, wb2)
+            diffs, tfm, drange, empty_sessions, missing_darush = run_comparison(wb1, wb2)
 
             if self.use_filter:
                 diffs  = [d for d in diffs if self.date_start <= d['date'] <= self.date_end]
-                empty_sessions = [es for es in empty_sessions
-                                  if self.date_start <= es['date'] <= self.date_end]
+                empty_sessions  = [es  for es  in empty_sessions
+                                   if self.date_start <= es['date']  <= self.date_end]
+                missing_darush  = [mds for mds in missing_darush
+                                   if self.date_start <= mds['date'] <= self.date_end]
                 drange = (f"{self.date_start.strftime('%d.%m.%Y')} — "
                           f"{self.date_end.strftime('%d.%m.%Y')}")
 
-            if not diffs and not empty_sessions:
+            if not diffs and not empty_sessions and not missing_darush:
                 if self.use_filter:
                     self.error.emit(
                         f'לא נמצאו פערים בין '
@@ -682,16 +740,269 @@ class Worker(QThread):
                 return
 
             self.status.emit('בונה דוח…');     self.progress.emit(80)
-            build_report(diffs, tfm, drange, self.output, empty_sessions)
+            build_report(diffs, tfm, drange, self.output, empty_sessions, missing_darush)
 
-            math_count = len([d for d in diffs if d['subject'] == 'מתמטיקה'])
-            eng_count  = len([d for d in diffs if d['subject'] == 'אנגלית'])
+            math_count     = len([d for d in diffs if d['subject'] == 'מתמטיקה'])
+            eng_count      = len([d for d in diffs if d['subject'] == 'אנגלית'])
+            mark_count     = len([d for d in diffs if d['type'] == 'לסמן באדום'])
+            warnings_count = len(empty_sessions) + len(missing_darush)
             self.progress.emit(100)
-            self.finished.emit(self.output, math_count, eng_count, drange)
+            self.finished.emit(self.output, math_count, eng_count, mark_count, warnings_count, drange)
 
         except Exception as exc:
             import traceback
             self.error.emit(f'שגיאה בעיבוד הקבצים:\n{exc}\n\n{traceback.format_exc()}')
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── History dialog ────────────────────────────────────────────────────────────
+
+class HistoryDialog(QDialog):
+    def __init__(self, history: list, settings: QSettings, parent=None):
+        super().__init__(parent)
+        self._history  = list(history)
+        self._settings = settings
+
+        self.setWindowTitle('היסטוריית ריצות')
+        self.setMinimumWidth(540)
+        self.setMinimumHeight(340)
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setStyleSheet(f'background: {BG};')
+
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(22, 18, 22, 20)
+        self._lay.setSpacing(12)
+
+        hdr = QLabel('📋   היסטוריית ריצות')
+        f = QFont(); f.setPointSize(15); f.setBold(True)
+        hdr.setFont(f)
+        hdr.setStyleSheet(f'color: {TEXT};')
+        self._lay.addWidget(hdr)
+
+        self._build_list()
+
+        # ── Footer ────────────────────────────────────────────────────────
+        footer = QHBoxLayout()
+        footer.setSpacing(10)
+
+        self._clear_all_btn = QPushButton('🗑   מחק הכל')
+        self._clear_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_all_btn.setVisible(bool(self._history))
+        self._clear_all_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: 1px solid #fca5a5;
+                border-radius: 8px; padding: 8px 18px;
+                font-size: 13px; color: #dc2626;
+            }}
+            QPushButton:hover {{ background: #fee2e2; }}
+        """)
+        self._clear_all_btn.clicked.connect(self._delete_all)
+
+        close_btn = QPushButton('סגור')
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.clicked.connect(self.accept)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {PRIMARY}; color: white; border-radius: 8px;
+                padding: 8px 28px; font-size: 13px; font-weight: bold;
+            }}
+            QPushButton:hover {{ background: {PRIMARY_H}; }}
+        """)
+
+        footer.addWidget(self._clear_all_btn)
+        footer.addStretch()
+        footer.addWidget(close_btn)
+        self._lay.addLayout(footer)
+
+    def _build_list(self):
+        if not self._history:
+            self._scroll = None
+            empty = QLabel('אין ריצות קודמות עדיין.')
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            empty.setStyleSheet(f'color: {MUTED}; font-size: 13px; padding: 30px;')
+            self._lay.insertWidget(1, empty)
+            self._lay.insertStretch(2)
+            return
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setStyleSheet('QScrollArea { border: none; background: transparent; }')
+        container = QWidget()
+        container.setStyleSheet('background: transparent;')
+        self._vlay = QVBoxLayout(container)
+        self._vlay.setSpacing(8)
+        self._vlay.setContentsMargins(2, 2, 2, 2)
+
+        for entry in self._history:
+            self._vlay.addWidget(self._make_card(entry))
+
+        self._vlay.addStretch()
+        self._scroll.setWidget(container)
+        self._lay.insertWidget(1, self._scroll)
+
+    def _make_card(self, entry: dict) -> QFrame:
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {CARD}; border: 1px solid {BORDER};
+                border-radius: 10px;
+            }}
+        """)
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(14, 10, 10, 8)
+        outer.setSpacing(3)
+
+        # ── Main row ──────────────────────────────────────────────────────
+        crow = QHBoxLayout()
+        crow.setSpacing(6)
+
+        total = entry.get('math_count', 0) + entry.get('eng_count', 0)
+        parts = [f'{total} פערים']
+        if entry.get('mark_count'):
+            parts.append(f"לסמן באדום: {entry['mark_count']}")
+        if entry.get('warnings_count'):
+            parts.append(f"אזהרות: {entry['warnings_count']}")
+
+        stat_lbl = QLabel('   ·   '.join(parts))
+        sf = QFont(); sf.setBold(True); sf.setPointSize(12)
+        stat_lbl.setFont(sf)
+        stat_lbl.setStyleSheet(f'color: {TEXT}; background: transparent;')
+
+        ts_lbl = QLabel(entry.get('timestamp', ''))
+        ts_lbl.setStyleSheet(f'color: {MUTED}; font-size: 11px; background: transparent;')
+
+        crow.addWidget(stat_lbl)
+        crow.addStretch()
+
+        for icon, tip, path_key, is_dir in [
+            ('📄', 'פתח דוח פערים',                             'report_path', False),
+            ('📂', 'פתח תיקיית הריצה (דרוש תיקון + ייצוא שיטס)', 'run_dir',     True),
+        ]:
+            p = entry.get(path_key, '')
+            exists = os.path.isdir(p) if is_dir else os.path.exists(p)
+            if p and exists:
+                crow.addWidget(self._open_btn(icon, tip, p))
+
+        crow.addWidget(ts_lbl)
+
+        del_btn = QPushButton('✕')
+        del_btn.setToolTip('הסר מההיסטוריה')
+        del_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        del_btn.setFixedSize(22, 22)
+        del_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent; border: none;
+                color: #94a3b8; font-size: 13px; font-weight: bold;
+            }
+            QPushButton:hover { color: #dc2626; }
+        """)
+        del_btn.clicked.connect(lambda _, e=entry, c=card: self._delete_entry(e, c))
+        crow.addWidget(del_btn)
+
+        outer.addLayout(crow)
+
+        # ── Date range subtitle ───────────────────────────────────────────
+        drange = entry.get('drange', '')
+        if drange:
+            dr_lbl = QLabel(drange)
+            dr_lbl.setStyleSheet(f'color: {MUTED}; font-size: 11px; background: transparent;')
+            outer.addWidget(dr_lbl)
+
+        return card
+
+    @staticmethod
+    def _open_btn(icon: str, tip: str, path: str) -> QPushButton:
+        btn = QPushButton(icon)
+        btn.setToolTip(tip)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedSize(30, 30)
+        btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #f1f5f9; border: 1px solid {BORDER};
+                border-radius: 7px; font-size: 15px;
+            }}
+            QPushButton:hover {{ background: #dbeafe; border-color: {ACCENT}; }}
+        """)
+        btn.clicked.connect(lambda _, p=path: subprocess.run(['open', p], check=False))
+        return btn
+
+    def _delete_entry(self, entry: dict, card: QFrame):
+        import json, shutil
+        run_dir = entry.get('run_dir', '')
+        if run_dir and os.path.isdir(run_dir):
+            try: shutil.rmtree(run_dir)
+            except Exception: pass
+        try:
+            self._history.remove(entry)
+        except ValueError:
+            pass
+        self._settings.setValue('run_history', json.dumps(self._history))
+        card.hide()
+        card.setMaximumHeight(0)
+        if not self._history and self._clear_all_btn:
+            self._clear_all_btn.setVisible(False)
+
+    def _delete_all(self):
+        import json, shutil
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle('אישור מחיקה')
+        dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        dlg.setStyleSheet(f'background: {CARD};')
+        dlg.setFixedWidth(340)
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(26, 22, 26, 22)
+        lay.setSpacing(20)
+
+        msg = QLabel('למחוק את כל ההיסטוריה והקבצים השמורים?')
+        msg.setWordWrap(True)
+        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        msg.setStyleSheet(f'color: {TEXT}; font-size: 14px; background: transparent;')
+        lay.addWidget(msg)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        yes_btn = QPushButton('כן, מחק הכל')
+        yes_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        yes_btn.setStyleSheet("""
+            QPushButton {
+                background: #dc2626; color: white; border-radius: 8px;
+                padding: 8px 20px; font-size: 13px; font-weight: bold; border: none;
+            }
+            QPushButton:hover { background: #b91c1c; }
+        """)
+        yes_btn.clicked.connect(dlg.accept)
+
+        no_btn = QPushButton('ביטול')
+        no_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        no_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #f1f5f9; border: 1px solid {BORDER};
+                border-radius: 8px; padding: 8px 20px;
+                font-size: 13px; color: {TEXT};
+            }}
+            QPushButton:hover {{ background: #e2e8f0; }}
+        """)
+        no_btn.clicked.connect(dlg.reject)
+
+        row.addWidget(yes_btn)
+        row.addWidget(no_btn)
+        lay.addLayout(row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        for entry in self._history:
+            run_dir = entry.get('run_dir', '')
+            if run_dir and os.path.isdir(run_dir):
+                try: shutil.rmtree(run_dir)
+                except Exception: pass
+        self._history.clear()
+        self._settings.setValue('run_history', '[]')
+        self.accept()
 
 
 # ── Main window ───────────────────────────────────────────────────────────────
@@ -702,7 +1013,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('מתכנן הפערים')
         self.setMinimumWidth(660)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self._settings = QSettings('TutorDiff', 'TutorDiff')
+        self._settings       = QSettings('TutorDiff', 'TutorDiff')
+        self._auto_assigning = False
+        self.setAcceptDrops(True)
         self._build_ui()
         self._restore_last_files()
 
@@ -744,14 +1057,30 @@ class MainWindow(QMainWindow):
 
         # ── Drop zones ───────────────────────────────────────────────────
         zones_row = QHBoxLayout()
-        zones_row.setSpacing(14)
+        zones_row.setSpacing(10)
         self.darush_zone = DropZone('דרוש תיקון', 'גרור לכאן את הקובץ לתיקון')
         self.yitzua_zone = DropZone('ייצוא שיטס',  'גרור לכאן את הקובץ התקין')
-        self.darush_zone.file_changed.connect(lambda p: self._settings.setValue('darush_path', p))
-        self.yitzua_zone.file_changed.connect(lambda p: self._settings.setValue('yitzua_path', p))
+        self.darush_zone.file_changed.connect(self._on_darush_file)
+        self.yitzua_zone.file_changed.connect(self._on_yitzua_file)
         self.darush_zone.cleared.connect(lambda: self._settings.setValue('darush_path', ''))
         self.yitzua_zone.cleared.connect(lambda: self._settings.setValue('yitzua_path', ''))
+
+        swap_btn = QPushButton('⇄')
+        swap_btn.setToolTip('החלף בין הקבצים')
+        swap_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        swap_btn.setFixedSize(36, 36)
+        swap_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #f1f5f9; border: 1.5px solid {BORDER};
+                border-radius: 9px; font-size: 18px; color: {MUTED};
+            }}
+            QPushButton:hover   {{ background: #dbeafe; border-color: {ACCENT}; color: {ACCENT}; }}
+            QPushButton:pressed {{ background: #bfdbfe; }}
+        """)
+        swap_btn.clicked.connect(self._swap_files)
+
         zones_row.addWidget(self.darush_zone)
+        zones_row.addWidget(swap_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         zones_row.addWidget(self.yitzua_zone)
         root.addLayout(zones_row)
 
@@ -782,6 +1111,21 @@ class MainWindow(QMainWindow):
         self.status_lbl.setStyleSheet(f'color: {MUTED}; font-size: 12px; min-height: 16px;')
         root.addWidget(self.status_lbl)
 
+        self.cancel_btn = QPushButton('✕   ביטול')
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.setFixedHeight(30)
+        self.cancel_btn.setStyleSheet("""
+            QPushButton {
+                background: #fee2e2; border: 1px solid #fca5a5;
+                border-radius: 7px; padding: 3px 20px;
+                font-size: 12px; color: #dc2626;
+            }
+            QPushButton:hover { background: #fca5a5; }
+        """)
+        self.cancel_btn.clicked.connect(self._cancel)
+        self.cancel_btn.setVisible(False)
+        root.addWidget(self.cancel_btn, 0, Qt.AlignmentFlag.AlignCenter)
+
         # ── Build button ─────────────────────────────────────────────────
         self.build_btn = QPushButton('✦   צור דוח')
         self.build_btn.setMinimumHeight(52)
@@ -802,21 +1146,128 @@ class MainWindow(QMainWindow):
             QPushButton:disabled {{ background: #94a3b8; color: #e2e8f0; }}
         """)
         self.build_btn.setGraphicsEffect(_shadow(12, 4, 35))
+        self.build_btn.setToolTip('⌘↩')
         self.build_btn.clicked.connect(self._run)
+        QShortcut(QKeySequence('Ctrl+Return'), self).activated.connect(self._run)
         root.addWidget(self.build_btn)
 
         # ── Results card ─────────────────────────────────────────────────
         self.results_card = ResultsCard()
         root.addWidget(self.results_card)
 
+        # ── History button ───────────────────────────────────────────────
+        self.history_btn = QPushButton('📋   היסטוריית ריצות')
+        self.history_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.history_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: 1px solid {BORDER};
+                border-radius: 8px; padding: 6px 18px;
+                font-size: 12px; color: {MUTED};
+            }}
+            QPushButton:hover {{ background: white; color: {TEXT}; border-color: #94a3b8; }}
+        """)
+        self.history_btn.clicked.connect(self._show_history)
+        root.addWidget(self.history_btn, 0, Qt.AlignmentFlag.AlignCenter)
+
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _restore_last_files(self):
-        for key, zone in [('darush_path', self.darush_zone),
-                           ('yitzua_path', self.yitzua_zone)]:
-            path = self._settings.value(key, '')
-            if path and os.path.exists(path):
-                zone.set_file(path)
+        self._auto_assigning = True   # don't re-detect files from previous session
+        try:
+            for key, zone in [('darush_path', self.darush_zone),
+                               ('yitzua_path', self.yitzua_zone)]:
+                path = self._settings.value(key, '')
+                if path and os.path.exists(path):
+                    zone.set_file(path)
+        finally:
+            self._auto_assigning = False
+
+    def _swap_files(self):
+        d_path = self.darush_zone.file_path
+        y_path = self.yitzua_zone.file_path
+        self._auto_assigning = True   # user explicitly swapped — don't re-detect
+        try:
+            if y_path:
+                self.darush_zone.set_file(y_path)
+            else:
+                self.darush_zone._clear()
+            if d_path:
+                self.yitzua_zone.set_file(d_path)
+            else:
+                self.yitzua_zone._clear()
+        finally:
+            self._auto_assigning = False
+
+    # ── File-type auto-detection ──────────────────────────────────────────────
+
+    def _on_darush_file(self, path: str):
+        self._settings.setValue('darush_path', path)
+        if not self._auto_assigning:
+            self._auto_assign(path, self.darush_zone)
+
+    def _on_yitzua_file(self, path: str):
+        self._settings.setValue('yitzua_path', path)
+        if not self._auto_assigning:
+            self._auto_assign(path, self.yitzua_zone)
+
+    def _auto_assign(self, path: str, dropped_on: DropZone):
+        detected = _detect_file_type(path)
+        if detected is None:
+            return
+        correct = self.darush_zone if detected == 'darush' else self.yitzua_zone
+        if dropped_on is correct:
+            return
+        self._auto_assigning = True
+        try:
+            dropped_on._clear()
+            correct.set_file(path)
+            self.status_lbl.setText('✓ זוהה אוטומטית — סודר לאזור הנכון')
+            QTimer.singleShot(3000, lambda: self.status_lbl.setText(''))
+        finally:
+            self._auto_assigning = False
+
+    # ── Run history ───────────────────────────────────────────────────────────
+
+    def _load_run_history(self) -> list:
+        import json
+        try:
+            return json.loads(self._settings.value('run_history', '[]'))
+        except Exception:
+            return []
+
+    def _save_run_history(self, entry: dict):
+        import json, shutil
+        base = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.AppDataLocation)
+        run_dir = os.path.join(base, 'runs',
+                               datetime.now().strftime('%Y%m%d_%H%M%S'))
+        try:
+            os.makedirs(run_dir, exist_ok=True)
+            for priv_key, pub_key, dest_name in [
+                ('_report_path', 'report_path', 'דוח_פערים.xlsx'),
+                ('_darush_path', 'darush_path', 'דרוש_תיקון.xlsx'),
+                ('_yitzua_path', 'yitzua_path', 'ייצוא_שיטס.xlsx'),
+            ]:
+                src = entry.pop(priv_key, None)
+                if src and os.path.exists(src):
+                    dest = os.path.join(run_dir, dest_name)
+                    shutil.copy2(src, dest)
+                    entry[pub_key] = dest
+            entry['run_dir'] = run_dir
+        except Exception:
+            pass
+
+        history = self._load_run_history()
+        history.insert(0, entry)
+        for old in history[20:]:
+            old_dir = old.get('run_dir', '')
+            if old_dir and os.path.isdir(old_dir):
+                try: shutil.rmtree(old_dir)
+                except Exception: pass
+        self._settings.setValue('run_history', json.dumps(history[:20]))
+
+    def _show_history(self):
+        HistoryDialog(self._load_run_history(), self._settings, self).exec()
 
     # ── run ───────────────────────────────────────────────────────────────────
 
@@ -825,29 +1276,25 @@ class MainWindow(QMainWindow):
         yitzua = self.yitzua_zone.file_path
 
         if not darush:
-            QMessageBox.warning(self, 'חסר קובץ', 'יש לבחור קובץ "דרוש תיקון".')
+            _alert(self, 'חסר קובץ', 'יש לבחור קובץ "דרוש תיקון".')
             return
         if not yitzua:
-            QMessageBox.warning(self, 'חסר קובץ', 'יש לבחור קובץ "ייצוא שיטס".')
+            _alert(self, 'חסר קובץ', 'יש לבחור קובץ "ייצוא שיטס".')
             return
         if not os.path.exists(darush):
-            QMessageBox.warning(self, 'קובץ לא נמצא',
-                f'הקובץ "דרוש תיקון" לא נמצא בנתיב:\n{darush}')
+            _alert(self, 'קובץ לא נמצא', f'הקובץ "דרוש תיקון" לא נמצא בנתיב:\n{darush}')
             self.darush_zone._clear()
             return
         if not os.path.exists(yitzua):
-            QMessageBox.warning(self, 'קובץ לא נמצא',
-                f'הקובץ "ייצוא שיטס" לא נמצא בנתיב:\n{yitzua}')
+            _alert(self, 'קובץ לא נמצא', f'הקובץ "ייצוא שיטס" לא נמצא בנתיב:\n{yitzua}')
             self.yitzua_zone._clear()
             return
         if os.path.abspath(darush) == os.path.abspath(yitzua):
-            QMessageBox.warning(self, 'קבצים זהים',
-                'שני הקבצים הם אותו קובץ.\nיש לבחור שני קבצים שונים.')
+            _alert(self, 'קבצים זהים', 'שני הקבצים הם אותו קובץ.\nיש לבחור שני קבצים שונים.')
             return
         if self.date_card.is_active():
             if self.date_card.get_start() > self.date_card.get_end():
-                QMessageBox.warning(self, 'טווח תאריכים שגוי',
-                    'תאריך ההתחלה חייב להיות לפני תאריך הסיום.')
+                _alert(self, 'טווח תאריכים שגוי', 'תאריך ההתחלה חייב להיות לפני תאריך הסיום.')
                 return
 
         # Build to a temp file first — we learn the date range only after processing
@@ -855,6 +1302,7 @@ class MainWindow(QMainWindow):
 
         self.results_card.hide_results()
         self.build_btn.setEnabled(False)
+        self.cancel_btn.setVisible(True)
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
         self.status_lbl.setText('מעבד…')
@@ -883,33 +1331,92 @@ class MainWindow(QMainWindow):
             return f'דוח_פערים_{d1}-{d2}.xlsx'
         return 'דוח_פערים.xlsx'
 
-    def _on_done(self, tmp_path: str, math_count: int, eng_count: int, drange: str):
+    def _on_done(self, tmp_path: str, math_count: int, eng_count: int,
+                 mark_count: int, warnings_count: int, drange: str):
         self.build_btn.setEnabled(True)
+        self.cancel_btn.setVisible(False)
         self.progress_bar.setVisible(False)
         self.status_lbl.setText('')
 
         # Ask where to save, with smart filename derived from the actual date range
         from PyQt6.QtWidgets import QFileDialog
-        import shutil
         filename = self._smart_filename(drange)
         default  = os.path.join(os.path.expanduser('~'), 'Downloads', filename)
         output, _ = QFileDialog.getSaveFileName(self, 'שמור דוח', default, 'Excel (*.xlsx)')
+        tmp_dir = os.path.dirname(tmp_path)
         if not output:
-            try: os.remove(tmp_path)
-            except OSError: pass
+            shutil.rmtree(tmp_dir, ignore_errors=True)
             return
         if not output.endswith('.xlsx'):
             output += '.xlsx'
 
         shutil.move(tmp_path, output)
-        self.results_card.show_results(output, math_count, eng_count)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        self.results_card.show_results(output, math_count, eng_count, mark_count, warnings_count)
         self._mac_notify(math_count + eng_count)
+        self._save_run_history({
+            'timestamp':      datetime.now().strftime('%d.%m.%Y %H:%M'),
+            'drange':         drange,
+            'math_count':     math_count,
+            'eng_count':      eng_count,
+            'mark_count':     mark_count,
+            'warnings_count': warnings_count,
+            'darush_file':    Path(self.darush_zone.file_path or '').name,
+            'yitzua_file':    Path(self.yitzua_zone.file_path or '').name,
+            '_report_path':   output,
+            '_darush_path':   self.darush_zone.file_path,
+            '_yitzua_path':   self.yitzua_zone.file_path,
+        })
 
     def _on_error(self, msg: str):
         self.build_btn.setEnabled(True)
+        self.cancel_btn.setVisible(False)
         self.progress_bar.setVisible(False)
         self.status_lbl.setText('')
-        QMessageBox.critical(self, 'שגיאה', msg)
+        _alert(self, 'שגיאה', msg, 'error')
+
+    def _cancel(self):
+        if hasattr(self, '_worker') and self._worker.isRunning():
+            # Disconnect signals first — terminate() is async and could still fire them
+            for sig in (self._worker.finished, self._worker.error,
+                        self._worker.status, self._worker.progress):
+                try: sig.disconnect()
+                except Exception: pass
+            self._worker.terminate()
+            self._worker.wait(1500)
+            try: shutil.rmtree(os.path.dirname(self._worker.output), ignore_errors=True)
+            except Exception: pass
+        self.build_btn.setEnabled(True)
+        self.cancel_btn.setVisible(False)
+        self.progress_bar.setVisible(False)
+        self.status_lbl.setText('')
+
+    # ── Window-wide drag-and-drop ─────────────────────────────────────────────
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            url = event.mimeData().urls()[0].toLocalFile().lower()
+            if url.endswith(('.xlsx', '.xls')):
+                event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent):
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        path = urls[0].toLocalFile()
+        if not path.lower().endswith(('.xlsx', '.xls')):
+            return
+        detected = _detect_file_type(path)
+        if detected == 'darush':
+            self.darush_zone.set_file(path)
+        elif detected == 'yitzua':
+            self.yitzua_zone.set_file(path)
+        elif not self.darush_zone.file_path:
+            self.darush_zone.set_file(path)
+        elif not self.yitzua_zone.file_path:
+            self.yitzua_zone.set_file(path)
+        else:
+            self.darush_zone.set_file(path)
 
     def _mac_notify(self, total: int):
         try:
