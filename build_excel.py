@@ -255,6 +255,8 @@ def tutor_canon(raw):
     first = re.sub(r'\s+ו[\u05d0-\u05ea]+.*', '', first).strip()
     return first.split()[0] if first.split() else first
 
+_NOT_IN_SYS_RE = re.compile(r'לא\s+(?:נכנס[ה]?|מתעדכן[ת]?)')
+
 def parse_slots(ws, col, start_row, first_time='', first_subject=None):
     """Parse a column into time slots. Returns {time: {'students': set, 'subject': str|None}}."""
     current_t = first_time
@@ -275,8 +277,13 @@ def parse_slots(ws, col, start_row, first_time='', first_subject=None):
         else:
             if len(vs) > 50: continue
             name = clean_student_name(vs)
-            # Skip: "לא נכנס/ה למערכת" — student exists but isn't in the system
-            if 'לא נכנס' in vs:
+            # "לא נכנס/ה למערכת" or "לא מתעדכן/ת" — report as a gap, not silently skipped
+            if _NOT_IN_SYS_RE.search(vs):
+                extracted = clean_student_name(_NOT_IN_SYS_RE.split(vs)[0])
+                if extracted and current_t is not None:
+                    if current_t not in slots:
+                        slots[current_t] = {'students': {}, 'subject': current_s}
+                    slots[current_t]['students'][extracted] = 'לא מתעדכן'
                 continue
             # Skip: strikethrough text — student notified absence in advance
             if cell.font and getattr(cell.font, 'strike', False):
@@ -502,8 +509,9 @@ def run_comparison(wb1, wb2):
                                      'subject': sy['subject'], 'location': sy['location']})
         for dn in d_sts:
             if dn not in md and not is_junk(dn):
+                gap_type = 'לא מתעדכן' if d_sts[dn] == 'לא מתעדכן' else 'להסיר'
                 differences.append({'tutor': sy['tutor'], 'date': sy['date'], 'time': sy['time'],
-                                     'type': 'להסיר', 'student': dn,
+                                     'type': gap_type, 'student': dn,
                                      'attendance': None,
                                      'subject': sy['subject'], 'location': sy['location']})
 
@@ -523,8 +531,9 @@ def run_comparison(wb1, wb2):
         subj = tutor_subject(canon, None)
         for dn in d_sts:
             if not is_junk(dn):
+                gap_type = 'לא מתעדכן' if d_sts[dn] == 'לא מתעדכן' else 'להסיר'
                 differences.append({'tutor': full, 'date': date_obj, 'time': t,
-                                     'type': 'להסיר', 'student': dn,
+                                     'type': gap_type, 'student': dn,
                                      'attendance': None,
                                      'subject': subj, 'location': None})
 
@@ -562,9 +571,10 @@ def build_report(differences, tutor_full_map, date_range_str, output_path, empty
         return f"{name} {icon}" if icon else name
 
     def build_note(ds):
-        adds  = [d for d in ds if d['type'] == 'להוסיף']
-        rems  = [d for d in ds if d['type'] == 'להסיר']
-        marks = [d for d in ds if d['type'] == 'לסמן באדום']
+        adds     = [d for d in ds if d['type'] == 'להוסיף']
+        rems     = [d for d in ds if d['type'] == 'להסיר']
+        marks    = [d for d in ds if d['type'] == 'לסמן באדום']
+        not_sys  = [d for d in ds if d['type'] == 'לא מתעדכן']
         parts = []
         if adds:
             students_str = ', '.join(format_student(d) for d in adds)
@@ -575,6 +585,9 @@ def build_report(differences, tutor_full_map, date_range_str, output_path, empty
         if marks:
             students_str = ', '.join('🔴 ' + d['student'] for d in marks)
             parts.append('יש לסמן באדום: ' + students_str)
+        if not_sys:
+            students_str = ', '.join('⚠️ ' + d['student'] for d in not_sys)
+            parts.append('להזין למערכת: ' + students_str)
         return ' | '.join(parts)
 
     def branch_fill(loc):
