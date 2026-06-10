@@ -255,10 +255,14 @@ def tutor_canon(raw):
     first = re.sub(r'\s+ו[\u05d0-\u05ea]+.*', '', first).strip()
     return first.split()[0] if first.split() else first
 
-_NOT_IN_SYS_RE = re.compile(r'לא\s+(?:נכנס[ה]?|מתעדכן[ת]?)')
+_NOT_IN_SYS_RE = re.compile(
+    r'לא\s+(?:נכנס[ה]?|מתעדכן[ת]?|הצלחתי\s+להכניס)',
+    re.UNICODE,
+)
 
-def parse_slots(ws, col, start_row, first_time='', first_subject=None):
-    """Parse a column into time slots. Returns {time: {'students': set, 'subject': str|None}}."""
+def parse_slots(ws, col, start_row, first_time='', first_subject=None, strip_sys_note=False):
+    """Parse a column into time slots. Returns {time: {'students': set, 'subject': str|None}}.
+    strip_sys_note=True: used for yitzua — strip 'לא נכנס למערכת' notes and treat as regular students."""
     current_t = first_time
     current_s = first_subject
     slots = {}
@@ -277,13 +281,21 @@ def parse_slots(ws, col, start_row, first_time='', first_subject=None):
         else:
             if len(vs) > 50: continue
             name = clean_student_name(vs)
-            # "לא נכנס/ה למערכת" or "לא מתעדכן/ת" — report as a gap, not silently skipped
+            # "לא נכנס/ה למערכת" / "לא הצלחתי להכניס" etc.
             if _NOT_IN_SYS_RE.search(vs):
                 extracted = clean_student_name(_NOT_IN_SYS_RE.split(vs)[0])
                 if extracted and current_t is not None:
                     if current_t not in slots:
                         slots[current_t] = {'students': {}, 'subject': current_s}
-                    slots[current_t]['students'][extracted] = 'לא מתעדכן'
+                    if strip_sys_note:
+                        # yitzua: ignore the note, treat as a regular student so the
+                        # normal comparison can report them as 'להוסיף' if missing from darush
+                        slots[current_t]['students'][extracted] = get_attendance(
+                            cell.fill.fgColor.rgb if cell.fill and cell.fill.fgColor else '00000000'
+                        )
+                    else:
+                        # darush: flag explicitly so the diff shows 'להזין למערכת'
+                        slots[current_t]['students'][extracted] = 'לא מתעדכן'
                 continue
             # Skip: strikethrough text — student notified absence in advance
             if cell.font and getattr(cell.font, 'strike', False):
@@ -444,7 +456,7 @@ def run_comparison(wb1, wb2):
                 ft = xtime(r3) if r3 else ''
                 fs = detect_subject_label(str(r3)) if r3 else None
             col_had_students = False
-            for t, sd in parse_slots(ws, col, 4, ft, fs).items():
+            for t, sd in parse_slots(ws, col, 4, ft, fs, strip_sys_note=True).items():
                 if sd['students']:
                     col_had_students = True
                     subj = tutor_subject(canon, sd['subject'])
