@@ -190,21 +190,21 @@ def detect_subject_label(val):
         if any(k in v for k in keywords): return subj
     return None
 
-def parse_date_flexible(s):
+def parse_date_flexible(s, year=None):
     """Parse date from many formats. Year-agnostic: infers from context or defaults to current year."""
     s = str(s).strip()
     # Full date: 10/05/2026 or 10.05.2026
     m = re.search(r'(\d{1,2})[./](\d{1,2})[./](\d{4})', s)
     if m: return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)))
-    # Short date: 10.05 — infer year from context (set at parse time)
+    # Short date: 10.05 — caller must supply the year
     m = re.search(r'(\d{1,2})\.(\d{1,2})', s)
     if m:
         day, month = int(m.group(1)), int(m.group(2))
-        # Use the inferred year (set by caller)
-        return datetime(_inferred_year, month, day)
+        yr = year or datetime.now().year
+        return datetime(yr, month, day)
     return None
 
-_inferred_year = datetime.now().year  # updated dynamically per file
+_inferred_year = datetime.now().year  # read-only fallback; run_comparison uses a local copy
 
 def infer_year_from_workbook(wb):
     """Find the most common year in the workbook's dates to avoid hardcoding 2026."""
@@ -392,11 +392,9 @@ def calc_header_font_size(subject_text, tutors_text):
 
 def run_comparison(wb1, wb2):
     """Run full comparison. Returns (differences, tutor_full_map, date_range_str)."""
-    global _inferred_year
-
-    # Infer year dynamically from the files
-    _inferred_year = infer_year_from_workbook(wb1) or infer_year_from_workbook(wb2) or datetime.now().year
-    print(f"Inferred year: {_inferred_year}")
+    # Local — never written to the module-level global, safe under concurrent Worker threads
+    year = infer_year_from_workbook(wb1) or infer_year_from_workbook(wb2) or datetime.now().year
+    print(f"Inferred year: {year}")
 
     ws1 = wb1.active
 
@@ -413,7 +411,7 @@ def run_comparison(wb1, wb2):
 
     for i, sc in enumerate(date_list):
         ec = date_list[i+1] if i+1 < len(date_list) else ws1.max_column + 1
-        date_obj = parse_date(str(date_cols[sc]), _inferred_year)
+        date_obj = parse_date(str(date_cols[sc]), year)
         if not date_obj: continue
         all_darush_dates.append(date_obj)
         for col in range(sc, ec):
@@ -443,7 +441,7 @@ def run_comparison(wb1, wb2):
             v = ws.cell(1, c).value
             if v and 'יום' in str(v): day_cols[c] = str(v)
         for v in day_cols.values():
-            d = parse_date(v, _inferred_year)
+            d = parse_date(v, year)
             if d: yitzua_sheet_dates.add(d)
         for col in range(1, ws.max_column + 1):
             raw = str(ws.cell(2, col).value or '').strip()
@@ -451,7 +449,7 @@ def run_comparison(wb1, wb2):
             canon = tutor_canon(raw)
             loc = extract_location(raw)
             dl = next((v for c, v in sorted(day_cols.items(), reverse=True) if col >= c), '')
-            date_obj = parse_date(dl, _inferred_year)
+            date_obj = parse_date(dl, year)
             if not date_obj or date_obj not in darush_dates: continue
             r3 = ws.cell(3, col).value
             if r3 and isinstance(r3, str) and re.search(r'[\u05d0-\u05ea]{2,}', r3) and not re.search(r'\d+:\d+', r3):
