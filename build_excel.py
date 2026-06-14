@@ -282,9 +282,11 @@ def parse_slots(ws, col, start_row, first_time='', first_subject=None, strip_sys
             if len(vs) > 50: continue
             name = clean_student_name(vs)
             # "לא נכנס/ה למערכת" / "לא הצלחתי להכניס" etc.
+            # Name can appear before OR after the note, so scan all split segments.
             if _NOT_IN_SYS_RE.search(vs):
-                extracted = clean_student_name(_NOT_IN_SYS_RE.split(vs)[0])
-                if extracted and current_t is not None:
+                parts = _NOT_IN_SYS_RE.split(vs)
+                extracted = max((clean_student_name(p) for p in parts), key=len, default='')
+                if extracted and current_t:
                     if current_t not in slots:
                         slots[current_t] = {'students': {}, 'subject': current_s}
                     if strip_sys_note:
@@ -301,6 +303,8 @@ def parse_slots(ws, col, start_row, first_time='', first_subject=None, strip_sys
             if cell.font and getattr(cell.font, 'strike', False):
                 continue
             if not name:  # empty after cleaning
+                continue
+            if not current_t:  # no time marker seen yet in this column — skip
                 continue
             if current_t not in slots:
                 slots[current_t] = {'students': {}, 'subject': current_s}

@@ -46,6 +46,7 @@ TEXT      = '#1e293b'
 
 def _detect_file_type(path: str) -> 'str | None':
     """Return 'darush', 'yitzua', or None by inspecting row 1 of the workbook."""
+    wb = None
     try:
         wb = load_workbook(path, read_only=True, data_only=True)
         for sn in wb.sheetnames:
@@ -53,12 +54,14 @@ def _detect_file_type(path: str) -> 'str | None':
             first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
             vals = [str(v or '') for v in first_row[:60]]
             if any('יום' in v for v in vals):
-                wb.close(); return 'yitzua'
+                return 'yitzua'
             if any(re.search(r'\d{1,2}[./]\d{1,2}', v) for v in vals):
-                wb.close(); return 'darush'
-        wb.close()
+                return 'darush'
     except Exception:
         pass
+    finally:
+        if wb is not None:
+            wb.close()
     return None
 
 
@@ -1373,6 +1376,9 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setVisible(False)
         self.progress_bar.setVisible(False)
         self.status_lbl.setText('')
+        if hasattr(self, '_worker'):
+            try: shutil.rmtree(os.path.dirname(self._worker.output), ignore_errors=True)
+            except Exception: pass
         _alert(self, 'שגיאה', msg, 'error')
 
     def _cancel(self):
